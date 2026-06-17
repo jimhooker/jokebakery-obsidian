@@ -102,6 +102,21 @@ export default class BakerWriterSyncPlugin extends Plugin {
     }
   }
 
+  /**
+   * Drop the pull cursor and re-pull everything from the server.
+   *
+   * The pull is incremental: it only asks for rows changed since
+   * `lastSyncCursor`. So items that already existed *before* the cursor moved
+   * past them — e.g. lists created before this plugin learned to sync them —
+   * never come down on a normal sync. Blanking the cursor forces a full pull,
+   * which writes any such missing files (existing, unchanged files are no-ops).
+   */
+  async forceResync(): Promise<void> {
+    this.settings.lastSyncCursor = "";
+    await this.saveSettings();
+    await this.runSync();
+  }
+
   /** A synced file was deleted in the vault → queue its server-side deletion. */
   private async handleLocalDelete(file: TAbstractFile): Promise<void> {
     const record = Object.values(this.settings.records).find(

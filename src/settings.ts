@@ -112,6 +112,17 @@ export class BakerWriterSettingTab extends PluginSettingTab {
           .onClick(() => this.plugin.runSync())
       );
 
+    new Setting(containerEl)
+      .setName("Full resync")
+      .setDesc(
+        "Re-pull everything from the server, including items missed by earlier " +
+          "syncs (e.g. lists created before this device started syncing them). " +
+          "Safe: existing files are left untouched."
+      )
+      .addButton((b) =>
+        b.setButtonText("Full resync").onClick(() => this.plugin.forceResync())
+      );
+
     const note = containerEl.createEl("p", {
       cls: "setting-item-description",
     });
