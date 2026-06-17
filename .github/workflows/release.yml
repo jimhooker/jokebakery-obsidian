@@ -1,0 +1,39 @@
+name: Release Obsidian plugin
+
+# Build the plugin and publish a GitHub Release whenever a version tag is pushed,
+# e.g. `git tag 0.1.0 && git push origin 0.1.0`. The release assets (main.js,
+# manifest.json, versions.json) are what BRAT and the Obsidian community-plugin
+# installer download — the tag name MUST match the version in manifest.json.
+
+on:
+  push:
+    tags:
+      - "*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20.x"
+
+      - name: Build
+        run: |
+          npm ci
+          npm run build
+
+      - name: Create release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          gh release create "$TAG" \
+            --title "$TAG" \
+            --generate-notes \
+            main.js manifest.json versions.json

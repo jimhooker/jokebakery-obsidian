@@ -1,0 +1,7 @@
+node_modules/
+main.js
+*.js.map
+data.json
+*.zip
+# Packaged release output (the zip and its unzipped copy) — build artifacts, not source.
+bakerwriter-sync-*/
