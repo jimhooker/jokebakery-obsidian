@@ -10,6 +10,13 @@ export interface Rhythm {
 
 export type IENValue = "I" | "E" | "N" | null;
 
+/** A list item with a stable id, encoded in markdown as `- text ^id` (an
+ *  Obsidian block reference). Mirrors the server's ListItem. */
+export interface ListItemDTO {
+  id: string;
+  text: string;
+}
+
 export interface SprintDTO {
   type: "sprint";
   id: string;
@@ -23,7 +30,7 @@ export interface SprintDTO {
 export interface JokeListDTO {
   id: string;
   label: string;
-  items: string[];
+  items: ListItemDTO[];
   createdAt: string;
 }
 
@@ -33,7 +40,25 @@ export interface ListDTO {
   type: "list";
   id: string;
   label: string;
-  items: string[];
+  items: ListItemDTO[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** A crash - a link between two list items - as its own synced file. The ids
+ *  are canonical; labels/text are denormalized for a readable note. */
+export interface CrashDTO {
+  type: "crash";
+  id: string;
+  aListId: string;
+  aItemId: string;
+  aLabel: string;
+  aText: string;
+  bListId: string;
+  bItemId: string;
+  bLabel: string;
+  bText: string;
+  note: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -87,7 +112,7 @@ export interface JokeDTO {
 }
 
 export interface Deletion {
-  type: "sprint" | "joke" | "list";
+  type: "sprint" | "joke" | "list" | "crash";
   id: string;
 }
 
@@ -96,6 +121,7 @@ export interface ChangesResult {
   sprints: SprintDTO[];
   jokes: JokeDTO[];
   lists: ListDTO[];
+  crashes: CrashDTO[];
   deletions: Deletion[];
 }
 
@@ -113,7 +139,7 @@ export interface SprintPush {
 export interface JokeListPush {
   id?: string;
   label: string;
-  items: string[];
+  items: ListItemDTO[];
 }
 
 export interface ListPush {
@@ -121,7 +147,18 @@ export interface ListPush {
   id?: string;
   baseUpdatedAt?: string;
   label: string;
-  items: string[];
+  items: ListItemDTO[];
+}
+
+export interface CrashPush {
+  ref: string;
+  id?: string;
+  baseUpdatedAt?: string;
+  aListId: string;
+  aItemId: string;
+  bListId: string;
+  bItemId: string;
+  note?: string;
 }
 
 export interface JokePush {
@@ -160,6 +197,7 @@ export interface PushBody {
   sprints?: SprintPush[];
   jokes?: JokePush[];
   lists?: ListPush[];
+  crashes?: CrashPush[];
   deletes?: Deletion[];
 }
 
@@ -172,11 +210,11 @@ export type PushStatus =
 
 export interface PushResult {
   ref: string;
-  type: "sprint" | "joke" | "list";
+  type: "sprint" | "joke" | "list" | "crash";
   status: PushStatus;
   id?: string;
   updatedAt?: string;
-  server?: SprintDTO | JokeDTO | ListDTO;
+  server?: SprintDTO | JokeDTO | ListDTO | CrashDTO;
   message?: string;
 }
 
@@ -189,7 +227,7 @@ export interface PushResponse {
 
 export interface SyncRecord {
   id: string;
-  type: "sprint" | "joke" | "list";
+  type: "sprint" | "joke" | "list" | "crash";
   /** Vault-relative path of the file representing this item. */
   path: string;
   /** Server updatedAt we last reconciled with - our conflict-detection base. */

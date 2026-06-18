@@ -21,19 +21,31 @@
  */
 import type {
   AdditionalPunchlineDTO,
+  CrashDTO,
   IENValue,
   JokeDTO,
   JokePush,
   ListDTO,
+  ListItemDTO,
   Rhythm,
   SprintDTO,
   SprintPush,
 } from "./types";
 
+/** Item ids are assigned client-side for bullets a human typed straight into
+ *  Obsidian (no `^id` yet). Mirrors src/lib/id.ts in the app. */
+function newItemId(): string {
+  if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
+    return crypto.randomUUID().replace(/-/g, "").slice(0, 12);
+  }
+  return Math.random().toString(36).slice(2, 14);
+}
+
 export const SPRINTS_SUBDIR = "Sprints";
 export const JOKES_SUBDIR = "Jokes";
 export const LISTS_SUBDIR = "Lists";
 export const CONFLICTS_SUBDIR = "Conflicts";
+export const CRASHES_SUBDIR = "Crashes";
 
 const EMPTY_RHYTHM: Rhythm = { keys: [], colours: [] };
 
@@ -394,9 +406,9 @@ function parseBodySections(body: string): Record<string, string> {
  */
 function parseListReferences(
   block: string | undefined
-): Array<{ label: string; items: string[] }> {
+): Array<{ label: string; items: ListItemDTO[] }> {
   if (!block) return [];
-  const out: Array<{ label: string; items: string[] }> = [];
+  const out: Array<{ label: string; items: ListItemDTO[] }> = [];
   for (const raw of block.split("\n")) {
     const item = /^[-*]\s+(.*)$/.exec(raw);
     if (!item) continue;
@@ -505,7 +517,9 @@ export function listToMarkdown(dto: ListDTO): string {
 
   const body: string[] = [`# ${dto.label}`, ""];
   if (dto.items.length === 0) body.push("*(empty)*");
-  else for (const it of dto.items) body.push(`- ${it}`);
+  // Each item carries its stable id as an Obsidian block reference (`^id`), so
+  // crashes that link to it survive edits and round-trip through the vault.
+  else for (const it of dto.items) body.push(`- ${it.text} ^${it.id}`);
 
   return fm + body.join("\n").trimEnd() + "\n";
 }
@@ -513,29 +527,118 @@ export function listToMarkdown(dto: ListDTO): string {
 export interface ParsedList {
   id?: string;
   label: string;
-  items: string[];
+  items: ListItemDTO[];
 }
 
 /**
  * Parse a list note: `label` from frontmatter (falling back to the filename),
- * items from the body's bullet list. Headings (incl. the H1 title) and the
- * `*(empty)*` placeholder are ignored.
+ * items from the body's bullet list. Each bullet may carry a trailing block
+ * reference (`- text ^id`); bullets a human typed without one get a fresh id.
+ * Headings (incl. the H1 title) and the `*(empty)*` placeholder are ignored.
  */
 export function parseListFile(content: string, fallbackLabel: string): ParsedList {
   const { fm, body } = splitContent(content);
   const id = typeof fm["bw-id"] === "string" ? (fm["bw-id"] as string) : undefined;
   const label = asStr(fm["label"]).trim() || fallbackLabel;
 
-  const items: string[] = [];
+  const items: ListItemDTO[] = [];
   for (const raw of body.split("\n")) {
     if (/^#{1,6}\s/.test(raw)) continue;
     const m = /^[-*]\s+(.*)$/.exec(raw);
     if (!m) continue;
-    const t = m[1]!.trim();
-    if (t && t !== "*(empty)*") items.push(t);
+    // Pull a trailing `^id` block ref off the line *before* trimming, so a real
+    // id isn't lost and stray text isn't mistaken for one.
+    const rest = m[1]!;
+    const ref = /^(.*?)\s+\^([A-Za-z0-9-]+)\s*$/.exec(rest);
+    const text = (ref ? ref[1]! : rest).trim();
+    if (!text || text === "*(empty)*") continue;
+    items.push({ id: ref ? ref[2]! : newItemId(), text });
   }
 
   return { id, label, items };
+}
+
+// ---------------------------------------------------------------------------
+// Crash (a link between two list items, its own note under Crashes/)
+
+export function crashToMarkdown(dto: CrashDTO): string {
+  const fm = frontmatter([
+    ["bw-type", "crash"],
+    ["bw-id", emitScalar(dto.id)],
+    ["bw-created", emitScalar(dto.createdAt)],
+    ["bw-updated", emitScalar(dto.updatedAt)],
+    ["a-list", emitScalar(dto.aListId)],
+    ["a-item", emitScalar(dto.aItemId)],
+    ["b-list", emitScalar(dto.bListId)],
+    ["b-item", emitScalar(dto.bItemId)],
+  ]);
+
+  const body: string[] = [
+    `# ${dto.aText} ⚡ ${dto.bText}`,
+    "",
+    // Obsidian links straight to the linked block in each list note.
+    `- [[${dto.aLabel}#^${dto.aItemId}]] — ${dto.aText}`,
+    `- [[${dto.bLabel}#^${dto.bItemId}]] — ${dto.bText}`,
+    "",
+  ];
+  if (dto.note.trim()) {
+    body.push("## Note", "", dto.note.trim(), "");
+  }
+
+  return fm + body.join("\n").trimEnd() + "\n";
+}
+
+export interface ParsedCrash {
+  id?: string;
+  aListId: string;
+  aItemId: string;
+  aLabel: string;
+  aText: string;
+  bListId: string;
+  bItemId: string;
+  bLabel: string;
+  bText: string;
+  note: string;
+}
+
+/** Parse a crash note. Canonical ids come from frontmatter; the labels and item
+ *  text are recovered from the two `- [[label#^id]] — text` bullets (positional:
+ *  first is the A side, second is B). The note is the `## Note` section, if any. */
+export function parseCrashFile(content: string): ParsedCrash {
+  const { fm, body } = splitContent(content);
+  const id = typeof fm["bw-id"] === "string" ? (fm["bw-id"] as string) : undefined;
+
+  const bulletRe = /^[-*]\s+\[\[(.+?)#\^([A-Za-z0-9-]+)\]\]\s*—\s*(.*)$/;
+  const sides: Array<{ label: string; itemId: string; text: string }> = [];
+  let inNote = false;
+  const noteLines: string[] = [];
+  for (const raw of body.split("\n")) {
+    if (/^##\s+Note\s*$/.test(raw)) {
+      inNote = true;
+      continue;
+    }
+    if (inNote) {
+      noteLines.push(raw);
+      continue;
+    }
+    const m = bulletRe.exec(raw.trim());
+    if (m) sides.push({ label: m[1]!.trim(), itemId: m[2]!, text: m[3]!.trim() });
+  }
+
+  const a = sides[0];
+  const b = sides[1];
+  return {
+    id,
+    aListId: asStr(fm["a-list"]),
+    aItemId: asStr(fm["a-item"]) || a?.itemId || "",
+    aLabel: a?.label ?? "",
+    aText: a?.text ?? "",
+    bListId: asStr(fm["b-list"]),
+    bItemId: asStr(fm["b-item"]) || b?.itemId || "",
+    bLabel: b?.label ?? "",
+    bText: b?.text ?? "",
+    note: noteLines.join("\n").trim(),
+  };
 }
 
 export { type SprintPush, type JokePush };

@@ -19,13 +19,16 @@ import { App, TFile, Notice } from "obsidian";
 import { BakerWriterApi } from "./api";
 import {
   CONFLICTS_SUBDIR,
+  CRASHES_SUBDIR,
   JOKES_SUBDIR,
   LISTS_SUBDIR,
   SPRINTS_SUBDIR,
+  crashToMarkdown,
   dateFromFilename,
   hashString,
   jokeToMarkdown,
   listToMarkdown,
+  parseCrashFile,
   parseJokeFile,
   parseListFile,
   parseSprintFile,
@@ -33,12 +36,15 @@ import {
   slugify,
   sprintToMarkdown,
   stripSyncIdentity,
+  type ParsedCrash,
   type ParsedJoke,
   type ParsedList,
   type ParsedSprint,
 } from "./serialize";
 import type {
   BakerWriterSyncSettings,
+  CrashDTO,
+  CrashPush,
   JokeDTO,
   JokePush,
   ListDTO,
@@ -73,7 +79,7 @@ function emptySummary(): SyncSummary {
 
 interface ScannedFile {
   file: TFile;
-  type: "sprint" | "joke" | "list";
+  type: "sprint" | "joke" | "list" | "crash";
   content: string;
   hash: string;
   id?: string;
@@ -154,10 +160,12 @@ export class SyncEngine {
     return true;
   }
 
-  private defaultPath(dto: SprintDTO | JokeDTO | ListDTO): string {
+  private defaultPath(dto: SprintDTO | JokeDTO | ListDTO | CrashDTO): string {
     if (dto.type === "sprint") return `${this.sub(SPRINTS_SUBDIR)}/${dto.date}.md`;
     if (dto.type === "list")
       return `${this.sub(LISTS_SUBDIR)}/${slugify(dto.label)}.md`;
+    if (dto.type === "crash")
+      return `${this.sub(CRASHES_SUBDIR)}/${slugify(`${dto.aText}-x-${dto.bText}`)}.md`;
     return `${this.sub(JOKES_SUBDIR)}/${slugify(dto.title)}.md`;
   }
 
@@ -173,13 +181,15 @@ export class SyncEngine {
     const sprintsDir = this.sub(SPRINTS_SUBDIR) + "/";
     const jokesDir = this.sub(JOKES_SUBDIR) + "/";
     const listsDir = this.sub(LISTS_SUBDIR) + "/";
+    const crashesDir = this.sub(CRASHES_SUBDIR) + "/";
     const out: ScannedFile[] = [];
 
     for (const file of this.app.vault.getMarkdownFiles()) {
-      let type: "sprint" | "joke" | "list" | null = null;
+      let type: "sprint" | "joke" | "list" | "crash" | null = null;
       if (file.path.startsWith(sprintsDir)) type = "sprint";
       else if (file.path.startsWith(jokesDir)) type = "joke";
       else if (file.path.startsWith(listsDir)) type = "list";
+      else if (file.path.startsWith(crashesDir)) type = "crash";
       if (!type) continue;
 
       const content = await this.app.vault.cachedRead(file);
@@ -271,6 +281,29 @@ export class SyncEngine {
     };
   }
 
+  private crashDTO(
+    p: ParsedCrash,
+    id: string,
+    createdAt: string,
+    updatedAt: string
+  ): CrashDTO {
+    return {
+      type: "crash",
+      id,
+      aListId: p.aListId,
+      aItemId: p.aItemId,
+      aLabel: p.aLabel,
+      aText: p.aText,
+      bListId: p.bListId,
+      bItemId: p.bItemId,
+      bLabel: p.bLabel,
+      bText: p.bText,
+      note: p.note,
+      createdAt,
+      updatedAt,
+    };
+  }
+
   // -- push ----------------------------------------------------------------
 
   private async pushLocal(api: BakerWriterApi, summary: SyncSummary): Promise<void> {
@@ -279,6 +312,7 @@ export class SyncEngine {
     const sprints: SprintPush[] = [];
     const jokes: JokePush[] = [];
     const lists: ListPush[] = [];
+    const crashes: CrashPush[] = [];
 
     for (const s of scanned) {
       const record = s.id ? this.settings.records[s.id] : undefined;
@@ -309,6 +343,18 @@ export class SyncEngine {
           label: parsed.label,
           items: parsed.items,
         });
+      } else if (s.type === "crash") {
+        const parsed = parseCrashFile(s.content);
+        crashes.push({
+          ref,
+          id: parsed.id,
+          baseUpdatedAt,
+          aListId: parsed.aListId,
+          aItemId: parsed.aItemId,
+          bListId: parsed.bListId,
+          bItemId: parsed.bItemId,
+          note: parsed.note,
+        });
       } else {
         const parsed = parseJokeFile(s.content);
         jokes.push({ ref, baseUpdatedAt, ...parsed });
@@ -320,11 +366,12 @@ export class SyncEngine {
       sprints.length === 0 &&
       jokes.length === 0 &&
       lists.length === 0 &&
+      crashes.length === 0 &&
       deletes.length === 0
     )
       return;
 
-    const res = await api.push({ sprints, jokes, lists, deletes });
+    const res = await api.push({ sprints, jokes, lists, crashes, deletes });
 
     for (const r of res.results) {
       // A "deleted" result means the server has no live copy: either a delete
@@ -356,7 +403,9 @@ export class SyncEngine {
               ? sprintToMarkdown(server)
               : server.type === "list"
                 ? listToMarkdown(server)
-                : jokeToMarkdown(server);
+                : server.type === "crash"
+                  ? crashToMarkdown(server)
+                  : jokeToMarkdown(server);
           await this.writeFile(entry.file.path, content);
           this.settings.records[server.id] = {
             id: server.id,
@@ -387,6 +436,9 @@ export class SyncEngine {
       } else if (entry.type === "list") {
         const parsed = parseListFile(entry.content, entry.file.basename);
         content = listToMarkdown(this.listDTO(parsed, r.id, createdAt, r.updatedAt));
+      } else if (entry.type === "crash") {
+        const parsed = parseCrashFile(entry.content);
+        content = crashToMarkdown(this.crashDTO(parsed, r.id, createdAt, r.updatedAt));
       } else {
         const parsed = parseJokeFile(entry.content);
         content = jokeToMarkdown(this.jokeDTO(parsed, r.id, createdAt, r.updatedAt));
@@ -408,11 +460,12 @@ export class SyncEngine {
 
   private async pullRemote(api: BakerWriterApi, summary: SyncSummary): Promise<void> {
     const res = await api.changes(this.settings.lastSyncCursor);
-    const items: Array<SprintDTO | JokeDTO | ListDTO> = [
+    const items: Array<SprintDTO | JokeDTO | ListDTO | CrashDTO> = [
       ...res.sprints,
       ...res.jokes,
-      // Guard for an older server build that doesn't send a lists collection.
+      // Guard for an older server build that doesn't send these collections.
       ...(res.lists ?? []),
+      ...(res.crashes ?? []),
     ];
 
     for (const dto of items) {
@@ -421,7 +474,9 @@ export class SyncEngine {
           ? sprintToMarkdown(dto)
           : dto.type === "list"
             ? listToMarkdown(dto)
-            : jokeToMarkdown(dto);
+            : dto.type === "crash"
+              ? crashToMarkdown(dto)
+              : jokeToMarkdown(dto);
       const newHash = hashString(content);
       const record = this.settings.records[dto.id];
 
