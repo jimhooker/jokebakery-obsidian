@@ -84,6 +84,7 @@ export interface JokeDTO {
   id: string;
   title: string;
   premise: string;
+  keyWords: string[];
   setup: string;
   development: string;
   punchline: string;
@@ -170,6 +171,7 @@ export interface JokePush {
   baseUpdatedAt?: string;
   title?: string;
   premise?: string;
+  keyWords?: string[];
   setup?: string;
   development?: string;
   punchline?: string;

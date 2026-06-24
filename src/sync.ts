@@ -230,6 +230,7 @@ export class SyncEngine {
       id,
       title: p.title ?? deriveTitle(p.setup ?? ""),
       premise: p.premise ?? "",
+      keyWords: p.keyWords ?? [],
       setup: p.setup ?? "",
       development: p.development ?? "",
       punchline: p.punchline ?? "",
