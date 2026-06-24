@@ -326,6 +326,7 @@ export function jokeToMarkdown(dto: JokeDTO): string {
     ["bw-created", emitScalar(dto.createdAt)],
     ["bw-updated", emitScalar(dto.updatedAt)],
     ["title", emitScalar(dto.title)],
+    ["premise", emitScalar(dto.premise)],
     ["stage", String(dto.stage)],
     ["families", emitArray(dto.families)],
     ["joke-type", emitScalar(dto.jokeType)],
@@ -460,6 +461,7 @@ export function parseJokeFile(content: string): ParsedJoke {
   return {
     id: typeof fm["bw-id"] === "string" ? (fm["bw-id"] as string) : undefined,
     title: asStr(fm["title"]) || undefined,
+    premise: asStr(fm["premise"]),
     stage: asNum(fm["stage"]),
     families: asStrArr(fm["families"]),
     jokeType: asStr(fm["joke-type"]),
@@ -519,7 +521,13 @@ export function listToMarkdown(dto: ListDTO): string {
   if (dto.items.length === 0) body.push("*(empty)*");
   // Each item carries its stable id as an Obsidian block reference (`^id`), so
   // crashes that link to it survive edits and round-trip through the vault.
-  else for (const it of dto.items) body.push(`- ${it.text} ^${it.id}`);
+  // Afterthoughts hang under their item as indented sub-bullets (also id-tagged).
+  else
+    for (const it of dto.items) {
+      body.push(`- ${it.text} ^${it.id}`);
+      for (const a of it.afterthoughts ?? [])
+        body.push(`    - ${a.text} ^${a.id}`);
+    }
 
   return fm + body.join("\n").trimEnd() + "\n";
 }
@@ -535,6 +543,10 @@ export interface ParsedList {
  * items from the body's bullet list. Each bullet may carry a trailing block
  * reference (`- text ^id`); bullets a human typed without one get a fresh id.
  * Headings (incl. the H1 title) and the `*(empty)*` placeholder are ignored.
+ *
+ * An *indented* bullet is an afterthought of the most recent top-level item -
+ * the riff chain ("Cat" -> "dog" -> "bone"). An indented bullet with no item
+ * above it (a malformed file) is promoted to a top-level item so nothing is lost.
  */
 export function parseListFile(content: string, fallbackLabel: string): ParsedList {
   const { fm, body } = splitContent(content);
@@ -543,16 +555,26 @@ export function parseListFile(content: string, fallbackLabel: string): ParsedLis
 
   const items: ListItemDTO[] = [];
   for (const raw of body.split("\n")) {
-    if (/^#{1,6}\s/.test(raw)) continue;
-    const m = /^[-*]\s+(.*)$/.exec(raw);
+    if (/^\s*#{1,6}\s/.test(raw)) continue;
+    // Capture leading whitespace so we can tell a top-level item from an
+    // indented afterthought.
+    const m = /^(\s*)[-*]\s+(.*)$/.exec(raw);
     if (!m) continue;
+    const indented = m[1]!.length > 0;
     // Pull a trailing `^id` block ref off the line *before* trimming, so a real
     // id isn't lost and stray text isn't mistaken for one.
-    const rest = m[1]!;
+    const rest = m[2]!;
     const ref = /^(.*?)\s+\^([A-Za-z0-9-]+)\s*$/.exec(rest);
     const text = (ref ? ref[1]! : rest).trim();
     if (!text || text === "*(empty)*") continue;
-    items.push({ id: ref ? ref[2]! : newItemId(), text });
+    const node: ListItemDTO = { id: ref ? ref[2]! : newItemId(), text };
+
+    const parent = items[items.length - 1];
+    if (indented && parent) {
+      (parent.afterthoughts ??= []).push(node);
+    } else {
+      items.push(node);
+    }
   }
 
   return { id, label, items };

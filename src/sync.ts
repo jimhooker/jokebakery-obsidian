@@ -229,6 +229,7 @@ export class SyncEngine {
       type: "joke",
       id,
       title: p.title ?? deriveTitle(p.setup ?? ""),
+      premise: p.premise ?? "",
       setup: p.setup ?? "",
       development: p.development ?? "",
       punchline: p.punchline ?? "",

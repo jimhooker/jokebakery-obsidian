@@ -11,10 +11,12 @@ export interface Rhythm {
 export type IENValue = "I" | "E" | "N" | null;
 
 /** A list item with a stable id, encoded in markdown as `- text ^id` (an
- *  Obsidian block reference). Mirrors the server's ListItem. */
+ *  Obsidian block reference). Mirrors the server's ListItem. `afterthoughts`
+ *  are riffs on the item, written as indented sub-bullets under it. */
 export interface ListItemDTO {
   id: string;
   text: string;
+  afterthoughts?: ListItemDTO[];
 }
 
 export interface SprintDTO {
@@ -81,6 +83,7 @@ export interface JokeDTO {
   type: "joke";
   id: string;
   title: string;
+  premise: string;
   setup: string;
   development: string;
   punchline: string;
@@ -166,6 +169,7 @@ export interface JokePush {
   id?: string;
   baseUpdatedAt?: string;
   title?: string;
+  premise?: string;
   setup?: string;
   development?: string;
   punchline?: string;

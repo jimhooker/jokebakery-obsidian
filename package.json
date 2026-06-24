@@ -1,6 +1,6 @@
 {
   "name": "bakerwriter-sync",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Two-way sync of BakerWriter sprints, jokes, lists and crashes with your Obsidian vault.",
   "main": "main.js",
   "scripts": {
