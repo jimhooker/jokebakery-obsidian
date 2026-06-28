@@ -49,6 +49,13 @@ export const CRASHES_SUBDIR = "Crashes";
 
 const EMPTY_RHYTHM: Rhythm = { keys: [], colours: [] };
 
+/** The IEN voice names, shouted. Mirrors IEN_LABELS in src/lib/ien-meta.ts. */
+const IEN_VOICE: Record<"I" | "E" | "N", string> = {
+  I: "INTERIOR",
+  E: "EXTERIOR",
+  N: "NARRATOR",
+};
+
 // ---------------------------------------------------------------------------
 // Tiny YAML emit/parse (only the subset we produce)
 
@@ -305,6 +312,45 @@ interface JokeMeta {
   additionalPunchlines?: AdditionalPunchlineDTO[];
 }
 
+/** One `- **VOICE** — line` bullet per IEN-tagged line of a slot. */
+function voiceLines(text: string, ien: IENValue[] | undefined): string[] {
+  if (!ien || !ien.some((v) => v)) return [];
+  const lines = text.trim().split("\n");
+  const out: string[] = [];
+  lines.forEach((line, i) => {
+    const tag = ien[i];
+    if (tag) out.push(`- **${IEN_VOICE[tag]}** — ${line}`);
+  });
+  return out;
+}
+
+/**
+ * Read-only `## Voices` section: shouts the Interior / Exterior / Narrator
+ * voice of each tagged line. Derived from the IEN markup that round-trips in
+ * `bw-meta`, so it's regenerated on every pull and ignored on parse (editing
+ * voices happens in BakerWriter). Empty when no line carries a voice.
+ */
+function voicesSection(dto: JokeDTO): string[] {
+  const slots: Array<[string, string, IENValue[] | undefined]> = [
+    ["Setup", dto.setup, dto.setupIEN],
+    ["Development", dto.development, dto.developmentIEN],
+    ["Punchline", dto.punchline, dto.punchlineIEN],
+  ];
+  const blocks: string[] = [];
+  for (const [name, text, ien] of slots) {
+    const vl = voiceLines(text, ien);
+    if (vl.length) blocks.push(`**${name}**`, "", ...vl, "");
+  }
+  if (!blocks.length) return [];
+  return [
+    "## Voices",
+    "",
+    "*Read-only — the Interior / Exterior / Narrator voice of each line. Edit in BakerWriter.*",
+    "",
+    ...blocks,
+  ];
+}
+
 export function jokeToMarkdown(dto: JokeDTO): string {
   const meta: JokeMeta = {
     setupComponents: dto.setupComponents,
@@ -346,6 +392,8 @@ export function jokeToMarkdown(dto: JokeDTO): string {
   section("Setup", dto.setup);
   section("Development", dto.development);
   section("Punchline", dto.punchline);
+
+  body.push(...voicesSection(dto));
 
   if (dto.lists.length > 0) {
     // Read-only references to the attached lists. Each list is its own note
@@ -453,6 +501,7 @@ export function parseJokeFile(content: string): ParsedJoke {
     "performance notes",
     "scratchpad",
     "lists",
+    "voices",
   ];
   const hasRecognized = recognizedKeys.some((k) => sections[k] !== undefined);
   if (!hasRecognized && body.trim()) {
