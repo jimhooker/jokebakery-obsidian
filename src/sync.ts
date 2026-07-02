@@ -205,7 +205,7 @@ export class SyncEngine {
 
       const content = await this.app.vault.cachedRead(file);
       const fm = peekFrontmatter(content);
-      const id = typeof fm["bw-id"] === "string" ? (fm["bw-id"] as string) : undefined;
+      const id = typeof fm["bw-id"] === "string" ? fm["bw-id"] : undefined;
       out.push({ file, type, content, hash: hashString(content), id });
     }
     return out;

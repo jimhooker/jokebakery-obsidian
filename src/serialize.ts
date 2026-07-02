@@ -159,7 +159,7 @@ function splitContent(content: string): { fm: Record<string, unknown>; body: str
   const lines = content.split("\n");
   let end = -1;
   for (let i = 1; i < lines.length; i++) {
-    if (lines[i]!.trim() === "---") {
+    if (lines[i].trim() === "---") {
       end = i;
       break;
     }
@@ -256,7 +256,7 @@ export function slugify(title: string): string {
 /** YYYY-MM-DD prefix from a sprint filename, if any. */
 export function dateFromFilename(name: string): string | null {
   const m = /^(\d{4}-\d{2}-\d{2})/.exec(name);
-  return m ? m[1]! : null;
+  return m ? m[1] : null;
 }
 
 // ---------------------------------------------------------------------------
@@ -295,7 +295,7 @@ function parseSprintBody(body: string): string[] {
     const m = /^\s*\d+\.\s+(.*)$/.exec(raw);
     if (m) {
       if (cur !== null) items.push(cur.trim());
-      cur = m[1]!;
+      cur = m[1];
     } else if (cur !== null) {
       if (raw.trim() === "") {
         items.push(cur.trim());
@@ -325,7 +325,7 @@ export interface ParsedSprint {
 
 export function parseSprintFile(content: string, fallbackDate: string): ParsedSprint {
   const { fm, body } = splitContent(content);
-  const id = typeof fm["bw-id"] === "string" ? (fm["bw-id"] as string) : undefined;
+  const id = typeof fm["bw-id"] === "string" ? fm["bw-id"] : undefined;
   const fmDate = asStr(fm["bw-date"]);
   const date = /^\d{4}-\d{2}-\d{2}$/.test(fmDate) ? fmDate : fallbackDate;
   return {
@@ -481,7 +481,7 @@ function parseBodySections(body: string): Record<string, string> {
     const h = /^##\s+(.*)$/.exec(raw);
     if (h) {
       flush();
-      heading = h[1]!.trim().toLowerCase();
+      heading = h[1].trim().toLowerCase();
       continue;
     }
     if (heading !== null) buf.push(raw);
@@ -503,7 +503,7 @@ function parseListReferences(
   for (const raw of block.split("\n")) {
     const item = /^[-*]\s+(.*)$/.exec(raw);
     if (!item) continue;
-    const label = item[1]!.trim();
+    const label = item[1].trim();
     if (label) out.push({ label, items: [] });
   }
   return out;
@@ -519,7 +519,7 @@ export function parseJokeFile(content: string): ParsedJoke {
   let meta: JokeMeta = {};
   if (typeof fm["bw-meta"] === "string") {
     try {
-      meta = JSON.parse(fm["bw-meta"] as string) as JokeMeta;
+      meta = JSON.parse(fm["bw-meta"]) as JokeMeta;
     } catch {
       meta = {};
     }
@@ -550,7 +550,7 @@ export function parseJokeFile(content: string): ParsedJoke {
   }
 
   return {
-    id: typeof fm["bw-id"] === "string" ? (fm["bw-id"] as string) : undefined,
+    id: typeof fm["bw-id"] === "string" ? fm["bw-id"] : undefined,
     title: asStr(fm["title"]) || undefined,
     premise: asStr(fm["premise"]),
     keyWords: asStrArr(fm["key-words"]),
@@ -603,7 +603,7 @@ export function stripSyncIdentity(content: string): string {
   const lines = content.split("\n");
   let end = -1;
   for (let i = 1; i < lines.length; i++) {
-    if (lines[i]!.trim() === "---") {
+    if (lines[i].trim() === "---") {
       end = i;
       break;
     }
@@ -614,7 +614,7 @@ export function stripSyncIdentity(content: string): string {
   let dropping = false;
   for (const line of lines.slice(1, end)) {
     const key = /^([A-Za-z0-9_-]+)\s*:/.exec(line);
-    if (key) dropping = key[1]!.startsWith("bw-");
+    if (key) dropping = key[1].startsWith("bw-");
     if (!dropping) kept.push(line);
   }
   const body = lines.slice(end + 1).join("\n").replace(/^\n+/, "");
@@ -667,7 +667,7 @@ export interface ParsedList {
  */
 export function parseListFile(content: string, fallbackLabel: string): ParsedList {
   const { fm, body } = splitContent(content);
-  const id = typeof fm["bw-id"] === "string" ? (fm["bw-id"] as string) : undefined;
+  const id = typeof fm["bw-id"] === "string" ? fm["bw-id"] : undefined;
   const label = asStr(fm["label"]).trim() || fallbackLabel;
 
   const items: ListItemDTO[] = [];
@@ -677,14 +677,14 @@ export function parseListFile(content: string, fallbackLabel: string): ParsedLis
     // indented afterthought.
     const m = /^(\s*)[-*]\s+(.*)$/.exec(raw);
     if (!m) continue;
-    const indented = m[1]!.length > 0;
+    const indented = m[1].length > 0;
     // Pull a trailing `^id` block ref off the line *before* trimming, so a real
     // id isn't lost and stray text isn't mistaken for one.
-    const rest = m[2]!;
+    const rest = m[2];
     const ref = /^(.*?)\s+\^([A-Za-z0-9-]+)\s*$/.exec(rest);
-    const text = (ref ? ref[1]! : rest).trim();
+    const text = (ref ? ref[1] : rest).trim();
     if (!text || text === "*(empty)*") continue;
-    const node: ListItemDTO = { id: ref ? ref[2]! : newItemId(), text };
+    const node: ListItemDTO = { id: ref ? ref[2] : newItemId(), text };
 
     const parent = items[items.length - 1];
     if (indented && parent) {
@@ -745,7 +745,7 @@ export interface ParsedCrash {
  *  first is the A side, second is B). The note is the `## Note` section, if any. */
 export function parseCrashFile(content: string): ParsedCrash {
   const { fm, body } = splitContent(content);
-  const id = typeof fm["bw-id"] === "string" ? (fm["bw-id"] as string) : undefined;
+  const id = typeof fm["bw-id"] === "string" ? fm["bw-id"] : undefined;
 
   const bulletRe = /^[-*]\s+\[\[(.+?)#\^([A-Za-z0-9-]+)\]\]\s*—\s*(.*)$/;
   const sides: Array<{ label: string; itemId: string; text: string }> = [];
@@ -761,7 +761,7 @@ export function parseCrashFile(content: string): ParsedCrash {
       continue;
     }
     const m = bulletRe.exec(raw.trim());
-    if (m) sides.push({ label: m[1]!.trim(), itemId: m[2]!, text: m[3]!.trim() });
+    if (m) sides.push({ label: m[1].trim(), itemId: m[2], text: m[3].trim() });
   }
 
   const a = sides[0];

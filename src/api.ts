@@ -32,9 +32,9 @@ function withTimeout<T>(p: Promise<T>, what: string): Promise<T> {
         window.clearTimeout(timer);
         resolve(v);
       },
-      (e) => {
+      (e: unknown) => {
         window.clearTimeout(timer);
-        reject(e);
+        reject(e instanceof Error ? e : new Error(String(e)));
       }
     );
   });
@@ -62,8 +62,10 @@ export class JokeBakeryApi {
     if (res.status === 401) {
       throw new ApiError("Unauthorized — check your access token.", 401);
     }
+    const body = res.json as { error?: unknown } | undefined;
     const detail =
-      (res.json && (res.json.error as string)) || `HTTP ${res.status}`;
+      (body && typeof body.error === "string" && body.error) ||
+      `HTTP ${res.status}`;
     throw new ApiError(`${what} failed: ${detail}`, res.status);
   }
 
@@ -79,7 +81,8 @@ export class JokeBakeryApi {
       "Connection"
     );
     this.check(res, "Connection");
-    return { userId: res.json.userId, tokenName: res.json.tokenName };
+    const body = res.json as { userId: string; tokenName: string };
+    return { userId: body.userId, tokenName: body.tokenName };
   }
 
   /** Pull everything changed since the cursor (omit for a full sync). */
