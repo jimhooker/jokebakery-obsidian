@@ -109,8 +109,8 @@ BRAT keeps the plugin updated as new releases are published here.
 
 ### Manual
 
-1. Download `main.js`, `manifest.json` and `versions.json` from the
-   [latest release](https://github.com/jimhooker/jokebakery-obsidian/releases),
+1. Download `main.js`, `manifest.json`, `styles.css` and `versions.json` from
+   the [latest release](https://github.com/jimhooker/jokebakery-obsidian/releases),
    or build them yourself with `npm install && npm run build`.
 2. Copy them into `<your-vault>/.obsidian/plugins/bakerwriter-sync/`. (The
    folder name is the plugin id, kept from before the JokeBakery rebrand so
@@ -122,6 +122,20 @@ BRAT keeps the plugin updated as new releases are published here.
 `npm run dev` runs esbuild in watch mode. Symlink this folder into your vault's
 `.obsidian/plugins/` to iterate live. `npm test` runs the serialization
 round-trip suite (vitest) — run it after touching `src/serialize.ts`.
+
+## Privacy and network use
+
+This plugin is a companion to the hosted [JokeBakery](https://jokebakery.com)
+service and talks **only** to `https://jokebakery.com` (the Server URL setting
+exists for development builds). On each sync it sends the contents of notes
+inside the configured sync folder (your jokes, sprints, lists and crashes)
+together with your access token, and pulls your items back. **No other part of
+your vault is read or transmitted**, and there are no analytics or third-party
+services. Your access token is stored in the plugin's `data.json` inside your
+vault — treat it as a secret; you can revoke it any time in JokeBakery under
+**Settings → Obsidian sync**.
+
+Using the plugin requires a JokeBakery account (currently invite-only).
 
 ## How it works
 

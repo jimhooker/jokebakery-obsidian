@@ -3,7 +3,7 @@
   "name": "JokeBakery Sync",
   "version": "0.3.0",
   "minAppVersion": "1.4.0",
-  "description": "Two-way sync of JokeBakery sprints, jokes, lists and crashes with your Obsidian vault.",
+  "description": "Two-way sync of your JokeBakery jokes, sprints, lists and crashes with your vault as Markdown. Requires a JokeBakery account.",
   "author": "James Hooker",
   "authorUrl": "https://jokebakery.com",
   "isDesktopOnly": false

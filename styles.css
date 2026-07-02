@@ -1,0 +1,6 @@
+/* JokeBakery Sync — plugin styles. Classes are prefixed jokebakery-sync- to
+   avoid collisions; Obsidian loads this file automatically alongside main.js. */
+
+.jokebakery-sync-wide-input {
+  width: 100%;
+}

@@ -40,7 +40,7 @@ export class JokeBakerySettingTab extends PluginSettingTab {
             await this.plugin.saveSettings();
           });
         t.inputEl.type = "password";
-        t.inputEl.style.width = "100%";
+        t.inputEl.addClass("jokebakery-sync-wide-input");
       });
 
     new Setting(containerEl)

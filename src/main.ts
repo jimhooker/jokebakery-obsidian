@@ -26,15 +26,17 @@ export default class JokeBakerySyncPlugin extends Plugin {
     this.statusBar.onClickEvent(() => void this.runSync());
     this.setStatus("idle");
 
+    // Obsidian namespaces command ids with the plugin id, so these stay short
+    // (a directory-review guideline). Renamed from bakerwriter-* in 0.3.0 —
+    // custom hotkeys from earlier BRAT builds need re-binding once.
     this.addCommand({
-      // Pre-rebrand id, kept so existing hotkey bindings survive.
-      id: "bakerwriter-sync-now",
+      id: "sync-now",
       name: "Sync now (two-way)",
       callback: () => this.runSync(),
     });
 
     this.addCommand({
-      id: "bakerwriter-full-resync",
+      id: "full-resync",
       name: "Full resync (re-pull everything)",
       callback: () => this.forceResync(),
     });

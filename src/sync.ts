@@ -15,7 +15,7 @@
  *
  * Not handled in this version: deletions don't propagate in either direction.
  */
-import { App, TFile, Notice } from "obsidian";
+import { App, TFile, Notice, normalizePath } from "obsidian";
 import { JokeBakeryApi } from "./api";
 import {
   CONFLICTS_SUBDIR,
@@ -105,11 +105,11 @@ export class SyncEngine {
 
   private sub(name: string): string {
     const f = this.settings.folder.replace(/\/+$/, "");
-    return f ? `${f}/${name}` : name;
+    return normalizePath(f ? `${f}/${name}` : name);
   }
 
-  private async exists(path: string): Promise<boolean> {
-    return this.app.vault.adapter.exists(path);
+  private exists(path: string): boolean {
+    return this.app.vault.getAbstractFileByPath(path) !== null;
   }
 
   private getFile(path: string): TFile | null {
@@ -123,7 +123,7 @@ export class SyncEngine {
     let cur = "";
     for (const p of parts) {
       cur = cur ? `${cur}/${p}` : p;
-      if (!(await this.exists(cur))) {
+      if (!this.exists(cur)) {
         try {
           await this.app.vault.createFolder(cur);
         } catch {
@@ -141,13 +141,13 @@ export class SyncEngine {
   }
 
   private async uniquePath(path: string): Promise<string> {
-    if (!(await this.exists(path))) return path;
+    if (!this.exists(path)) return path;
     const dot = path.lastIndexOf(".");
     const stem = dot === -1 ? path : path.slice(0, dot);
     const ext = dot === -1 ? "" : path.slice(dot);
     for (let n = 2; ; n++) {
       const candidate = `${stem}-${n}${ext}`;
-      if (!(await this.exists(candidate))) return candidate;
+      if (!this.exists(candidate)) return candidate;
     }
   }
 
