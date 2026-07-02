@@ -112,10 +112,21 @@ BRAT keeps the plugin updated as new releases are published here.
 1. Download `main.js`, `manifest.json`, `styles.css` and `versions.json` from
    the [latest release](https://github.com/jimhooker/jokebakery-obsidian/releases),
    or build them yourself with `npm install && npm run build`.
-2. Copy them into `<your-vault>/.obsidian/plugins/bakerwriter-sync/`. (The
-   folder name is the plugin id, kept from before the JokeBakery rebrand so
-   existing installs upgrade in place.)
+2. Copy them into `<your-vault>/.obsidian/plugins/jokebakery-sync/`.
 3. In Obsidian: **Settings → Community plugins**, enable **JokeBakery Sync**.
+
+### Migrating from a pre-0.4.0 (BakerWriter-era) install
+
+0.4.0 changed the plugin id from `bakerwriter-sync` to `jokebakery-sync`, so
+Obsidian treats it as a new plugin. To keep your settings and sync state:
+
+1. Install 0.4.0 (BRAT or manual) but don't enable it yet.
+2. Copy `<vault>/.obsidian/plugins/bakerwriter-sync/data.json` into
+   `<vault>/.obsidian/plugins/jokebakery-sync/`.
+3. Enable **JokeBakery Sync**, then uninstall the old **BakerWriter Sync**.
+
+Skipping step 2 also works — re-enter your token and folder and run a sync;
+files are matched by their `bw-id`, so nothing duplicates.
 
 ### Develop
 

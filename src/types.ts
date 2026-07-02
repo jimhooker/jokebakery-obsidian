@@ -2,10 +2,11 @@
  * Wire types - mirror of the server's sync-dto.ts. Kept as a hand-written copy
  * so the plugin has no build-time dependency on the JokeBakery app.
  *
- * Naming note: the `bw-` frontmatter keys, the `bw_` token prefix and the
- * plugin id `bakerwriter-sync` predate the JokeBakery rebrand. They are the
- * stable wire/identity format baked into every synced vault and issued token,
- * so they deliberately keep the old prefix.
+ * Naming note: the `bw-` frontmatter keys and the `bw_` token prefix predate
+ * the JokeBakery rebrand. They are the stable wire/identity format baked into
+ * every synced vault and issued token, so they deliberately keep the old
+ * prefix. (The plugin id DID rebrand to `jokebakery-sync` in 0.4.0, before the
+ * community-directory submission made it permanent.)
  */
 
 export interface Rhythm {
