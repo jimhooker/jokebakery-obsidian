@@ -2,7 +2,7 @@
  * Sync engine. Two phases per run:
  *
  *   1. PUSH - scan the vault for files that are new or edited since the last
- *      sync and send them to BakerWriter. The server detects conflicts via the
+ *      sync and send them to JokeBakery. The server detects conflicts via the
  *      updatedAt we last saw; on conflict the server's version wins and the
  *      local copy is preserved under Conflicts/.
  *   2. PULL - fetch everything changed since our cursor and write it into the
@@ -16,7 +16,7 @@
  * Not handled in this version: deletions don't propagate in either direction.
  */
 import { App, TFile, Notice } from "obsidian";
-import { BakerWriterApi } from "./api";
+import { JokeBakeryApi } from "./api";
 import {
   CONFLICTS_SUBDIR,
   CRASHES_SUBDIR,
@@ -42,7 +42,7 @@ import {
   type ParsedSprint,
 } from "./serialize";
 import type {
-  BakerWriterSyncSettings,
+  JokeBakerySyncSettings,
   CrashDTO,
   CrashPush,
   JokeDTO,
@@ -54,6 +54,12 @@ import type {
 } from "./types";
 
 const EMPTY_RHYTHM = { keys: [], colours: [] };
+
+/** Queued local deletions at or past this count are held for explicit
+ *  confirmation before being pushed - a deleted sync folder (or a vault gone
+ *  sideways) queues one per file, and pushing them would soft-delete the
+ *  user's whole library server-side in one sync. */
+export const MASS_DELETE_LIMIT = 20;
 
 export interface SyncSummary {
   pushedCreated: number;
@@ -88,8 +94,11 @@ interface ScannedFile {
 export class SyncEngine {
   constructor(
     private app: App,
-    private settings: BakerWriterSyncSettings,
-    private persist: () => Promise<void>
+    private settings: JokeBakerySyncSettings,
+    private persist: () => Promise<void>,
+    /** Asked before pushing >= MASS_DELETE_LIMIT deletions; false holds them. */
+    private confirmMassDelete: (count: number) => Promise<boolean> = () =>
+      Promise.resolve(false)
   ) {}
 
   // -- path helpers --------------------------------------------------------
@@ -156,7 +165,9 @@ export class SyncEngine {
     );
     if (!path) return false;
     const file = this.getFile(path);
-    if (file) await this.app.vault.delete(file);
+    // Trash (per the user's "Deleted files" setting) rather than hard-delete,
+    // so a server-driven deletion is recoverable on the vault side too.
+    if (file) await this.app.fileManager.trashFile(file);
     return true;
   }
 
@@ -308,7 +319,7 @@ export class SyncEngine {
 
   // -- push ----------------------------------------------------------------
 
-  private async pushLocal(api: BakerWriterApi, summary: SyncSummary): Promise<void> {
+  private async pushLocal(api: JokeBakeryApi, summary: SyncSummary): Promise<void> {
     const scanned = await this.scanLocalFiles();
     const dirty = new Map<string, ScannedFile>();
     const sprints: SprintPush[] = [];
@@ -363,7 +374,16 @@ export class SyncEngine {
       }
     }
 
-    const deletes = [...this.settings.pendingDeletes];
+    let deletes = [...this.settings.pendingDeletes];
+    if (deletes.length >= MASS_DELETE_LIMIT) {
+      if (!(await this.confirmMassDelete(deletes.length))) {
+        summary.errors.push(
+          `${deletes.length} queued deletions held back — run a manual sync to confirm deleting them in JokeBakery.`
+        );
+        deletes = [];
+      }
+    }
+
     if (
       sprints.length === 0 &&
       jokes.length === 0 &&
@@ -460,7 +480,7 @@ export class SyncEngine {
 
   // -- pull ----------------------------------------------------------------
 
-  private async pullRemote(api: BakerWriterApi, summary: SyncSummary): Promise<void> {
+  private async pullRemote(api: JokeBakeryApi, summary: SyncSummary): Promise<void> {
     const res = await api.changes(this.settings.lastSyncCursor);
     const items: Array<SprintDTO | JokeDTO | ListDTO | CrashDTO> = [
       ...res.sprints,
@@ -541,11 +561,11 @@ export class SyncEngine {
     const summary = emptySummary();
     if (!this.settings.token) {
       summary.errors.push("No access token set.");
-      if (!opts.silent) new Notice("BakerWriter: set an access token in settings.");
+      if (!opts.silent) new Notice("JokeBakery: set an access token in settings.");
       return summary;
     }
 
-    const api = new BakerWriterApi(this.settings.serverUrl, this.settings.token);
+    const api = new JokeBakeryApi(this.settings.serverUrl, this.settings.token);
     try {
       await this.pushLocal(api, summary);
       await this.pullRemote(api, summary);
@@ -598,5 +618,5 @@ function formatSummary(s: SyncSummary): string {
   if (s.conflicts) parts.push(`${s.conflicts} conflict${s.conflicts === 1 ? "" : "s"}`);
   if (s.errors.length) parts.push(`${s.errors.length} error${s.errors.length === 1 ? "" : "s"}`);
   const head = parts.length ? parts.join(" · ") : "already up to date";
-  return `BakerWriter sync: ${head}` + (s.errors.length ? `\n${s.errors[0]}` : "");
+  return `JokeBakery sync: ${head}` + (s.errors.length ? `\n${s.errors[0]}` : "");
 }

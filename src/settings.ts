@@ -1,11 +1,11 @@
 import { App, PluginSettingTab, Setting, Notice } from "obsidian";
-import type BakerWriterSyncPlugin from "./main";
-import { BakerWriterApi } from "./api";
+import type JokeBakerySyncPlugin from "./main";
+import { JokeBakeryApi } from "./api";
 
-export class BakerWriterSettingTab extends PluginSettingTab {
+export class JokeBakerySettingTab extends PluginSettingTab {
   constructor(
     app: App,
-    private plugin: BakerWriterSyncPlugin
+    private plugin: JokeBakerySyncPlugin
   ) {
     super(app, plugin);
   }
@@ -18,10 +18,10 @@ export class BakerWriterSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName("Server URL")
-      .setDesc("Your BakerWriter address, e.g. https://bakerwriter.vercel.app")
+      .setDesc("Your JokeBakery address, e.g. https://jokebakery.com")
       .addText((t) =>
         t
-          .setPlaceholder("https://bakerwriter.vercel.app")
+          .setPlaceholder("https://jokebakery.com")
           .setValue(s.serverUrl)
           .onChange(async (v) => {
             s.serverUrl = v.trim();
@@ -31,7 +31,7 @@ export class BakerWriterSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName("Access token")
-      .setDesc("Create one in BakerWriter under Settings → Obsidian sync.")
+      .setDesc("Create one in JokeBakery under Settings → Obsidian sync.")
       .addText((t) => {
         t.setPlaceholder("bw_…")
           .setValue(s.token)
@@ -48,7 +48,7 @@ export class BakerWriterSettingTab extends PluginSettingTab {
       .setDesc("Check the URL and token are valid.")
       .addButton((b) =>
         b.setButtonText("Test").onClick(async () => {
-          const api = new BakerWriterApi(s.serverUrl, s.token);
+          const api = new JokeBakeryApi(s.serverUrl, s.token);
           try {
             const who = await api.whoami();
             new Notice(`Connected ✓ (token: ${who.tokenName})`);
@@ -67,7 +67,7 @@ export class BakerWriterSettingTab extends PluginSettingTab {
       )
       .addText((t) =>
         t
-          .setPlaceholder("BakerWriter")
+          .setPlaceholder("JokeBakery")
           .setValue(s.folder)
           .onChange(async (v) => {
             s.folder = v.replace(/^\/+|\/+$/g, "");
@@ -130,7 +130,7 @@ export class BakerWriterSettingTab extends PluginSettingTab {
       "Tip: create a new sprint by adding a note in <folder>/Sprints named " +
         "after its date (e.g. 2026-06-10.md); create a joke by adding a note " +
         "in <folder>/Jokes; create a list by adding a note in <folder>/Lists. " +
-        "Deleting a synced file removes it in BakerWriter too."
+        "Deleting a synced file removes it in JokeBakery too."
     );
   }
 }

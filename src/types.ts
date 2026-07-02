@@ -1,6 +1,11 @@
 /**
  * Wire types - mirror of the server's sync-dto.ts. Kept as a hand-written copy
- * so the plugin has no build-time dependency on the BakerWriter app.
+ * so the plugin has no build-time dependency on the JokeBakery app.
+ *
+ * Naming note: the `bw-` frontmatter keys, the `bw_` token prefix and the
+ * plugin id `bakerwriter-sync` predate the JokeBakery rebrand. They are the
+ * stable wire/identity format baked into every synced vault and issued token,
+ * so they deliberately keep the old prefix.
  */
 
 export interface Rhythm {
@@ -242,7 +247,7 @@ export interface SyncRecord {
   hash: string;
 }
 
-export interface BakerWriterSyncSettings {
+export interface JokeBakerySyncSettings {
   serverUrl: string;
   token: string;
   folder: string;
@@ -258,10 +263,13 @@ export interface BakerWriterSyncSettings {
   pendingDeletes: Deletion[];
 }
 
-export const DEFAULT_SETTINGS: BakerWriterSyncSettings = {
-  serverUrl: "https://bakerwriter.vercel.app",
+/** The pre-rebrand default server URL — migrated to the new domain on load. */
+export const LEGACY_SERVER_URL = "https://bakerwriter.vercel.app";
+
+export const DEFAULT_SETTINGS: JokeBakerySyncSettings = {
+  serverUrl: "https://jokebakery.com",
   token: "",
-  folder: "BakerWriter",
+  folder: "JokeBakery",
   autoSync: true,
   syncIntervalMin: 5,
   lastSyncCursor: "",

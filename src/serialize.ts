@@ -14,11 +14,19 @@
  *   - The body holds editable prose under `## Setup` / `## Development` /
  *     `## Punchline`, brainstorm `## Lists`, and `## Notes` / `## Scratchpad`.
  *   - `## Alternative punchlines` and `## Setup versions` are rendered read-only
- *     and ignored on parse (managed in BakerWriter).
+ *     and ignored on parse (managed in JokeBakery).
  *
  * Identity lives in frontmatter `bw-id`, never the filename - so renaming a
  * file in Obsidian doesn't break the link.
+ *
+ * Frontmatter is PARSED with Obsidian's own YAML parser: when a user edits any
+ * property in Obsidian's Properties UI, Obsidian rewrites the whole block in
+ * normalized YAML (block-style arrays, requoted scalars) that a line-based
+ * parser can't read - and misreading it as empty would erase those fields on
+ * the next push. Emitting stays hand-rolled (a stable, minimal subset) so
+ * unchanged items always serialize byte-identically.
  */
+import { parseYaml } from "obsidian";
 import type {
   AdditionalPunchlineDTO,
   CrashDTO,
@@ -61,6 +69,9 @@ const IEN_VOICE: Record<"I" | "E" | "N", string> = {
 
 function emitScalar(s: string): string {
   if (s === "") return "''";
+  // Newlines/tabs can't survive a single-quoted single-line scalar; a JSON
+  // string is also a valid YAML double-quoted scalar and escapes them.
+  if (/[\n\r\t]/.test(s)) return JSON.stringify(s);
   const safe =
     /^[A-Za-z0-9 _./@-]+$/.test(s) &&
     !/^\s|\s$/.test(s) &&
@@ -129,6 +140,20 @@ function parseYamlValue(raw: string): unknown {
   return parseScalar(v);
 }
 
+/** Lenient line-based fallback for frontmatter Obsidian's parser rejects -
+ *  better to salvage the flat `key: value` pairs (above all `bw-id`) than to
+ *  treat the file as brand new and duplicate it on push. */
+function parseFrontmatterLines(lines: string[]): Record<string, unknown> {
+  const fm: Record<string, unknown> = {};
+  for (const line of lines) {
+    if (!line.trim() || line.trimStart().startsWith("#")) continue;
+    const idx = line.indexOf(":");
+    if (idx === -1) continue;
+    fm[line.slice(0, idx).trim()] = parseYamlValue(line.slice(idx + 1));
+  }
+  return fm;
+}
+
 function splitContent(content: string): { fm: Record<string, unknown>; body: string } {
   if (!content.startsWith("---")) return { fm: {}, body: content };
   const lines = content.split("\n");
@@ -141,12 +166,15 @@ function splitContent(content: string): { fm: Record<string, unknown>; body: str
   }
   if (end === -1) return { fm: {}, body: content };
 
-  const fm: Record<string, unknown> = {};
-  for (const line of lines.slice(1, end)) {
-    if (!line.trim() || line.trimStart().startsWith("#")) continue;
-    const idx = line.indexOf(":");
-    if (idx === -1) continue;
-    fm[line.slice(0, idx).trim()] = parseYamlValue(line.slice(idx + 1));
+  const yamlLines = lines.slice(1, end);
+  let fm: Record<string, unknown> = {};
+  try {
+    const parsed = parseYaml(yamlLines.join("\n")) as unknown;
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      fm = parsed as Record<string, unknown>;
+    }
+  } catch {
+    fm = parseFrontmatterLines(yamlLines);
   }
   const body = lines
     .slice(end + 1)
@@ -165,6 +193,9 @@ function frontmatter(pairs: Array<[string, string]>): string {
 function asStr(v: unknown, def = ""): string {
   if (typeof v === "string") return v;
   if (typeof v === "number" || typeof v === "boolean") return String(v);
+  // YAML parsers turn an unquoted `2026-06-06` into a Date; ours are always
+  // date-only (bw-date), so the ISO date part is the original string.
+  if (v instanceof Date && !isNaN(v.getTime())) return v.toISOString().slice(0, 10);
   return def;
 }
 function asNum(v: unknown): number | undefined {
@@ -186,6 +217,16 @@ function asRhythm(v: unknown): Rhythm {
 function asIEN(v: unknown): IENValue[] {
   if (!Array.isArray(v)) return [];
   return v.map((x) => (x === "I" || x === "E" || x === "N" ? x : null));
+}
+
+/** IEN tags are parallel to a slot's lines. An Obsidian edit can shrink the
+ *  slot and leave stale tags past the end - never push tags for lines that no
+ *  longer exist. (Reorders within the same line count are undetectable here;
+ *  see the README's limitations.) */
+function clampIEN(ien: IENValue[], slotText: string): IENValue[] {
+  const trimmed = slotText.trim();
+  const lineCount = trimmed ? trimmed.split("\n").length : 0;
+  return ien.slice(0, lineCount);
 }
 
 // ---------------------------------------------------------------------------
@@ -328,7 +369,7 @@ function voiceLines(text: string, ien: IENValue[] | undefined): string[] {
  * Read-only `## Voices` section: shouts the Interior / Exterior / Narrator
  * voice of each tagged line. Derived from the IEN markup that round-trips in
  * `bw-meta`, so it's regenerated on every pull and ignored on parse (editing
- * voices happens in BakerWriter). Empty when no line carries a voice.
+ * voices happens in JokeBakery). Empty when no line carries a voice.
  */
 function voicesSection(dto: JokeDTO): string[] {
   const slots: Array<[string, string, IENValue[] | undefined]> = [
@@ -345,7 +386,7 @@ function voicesSection(dto: JokeDTO): string[] {
   return [
     "## Voices",
     "",
-    "*Read-only — the Interior / Exterior / Narrator voice of each line. Edit in BakerWriter.*",
+    "*Read-only — the Interior / Exterior / Narrator voice of each line. Edit in JokeBakery.*",
     "",
     ...blocks,
   ];
@@ -397,12 +438,12 @@ export function jokeToMarkdown(dto: JokeDTO): string {
 
   if (dto.lists.length > 0) {
     // Read-only references to the attached lists. Each list is its own note
-    // under Lists/ - edit contents there; attach/detach in BakerWriter. Only
+    // under Lists/ - edit contents there; attach/detach in JokeBakery. Only
     // labels are rendered (no items) so this round-trips losslessly on push.
     body.push(
       "## Lists",
       "",
-      `*Read-only — open the list notes under ${LISTS_SUBDIR}/ to edit; attach/detach in BakerWriter.*`,
+      `*Read-only — open the list notes under ${LISTS_SUBDIR}/ to edit; attach/detach in JokeBakery.*`,
       ""
     );
     for (const l of dto.lists) body.push(`- ${l.label}`);
@@ -415,12 +456,12 @@ export function jokeToMarkdown(dto: JokeDTO): string {
 
   const alts = dto.additionalPunchlines.filter((p) => p.text.trim());
   if (alts.length > 0) {
-    body.push("## Alternative punchlines", "", "*Read-only — manage in BakerWriter.*", "");
+    body.push("## Alternative punchlines", "", "*Read-only — manage in JokeBakery.*", "");
     alts.forEach((p, i) => body.push(`### Alt ${i + 1}`, "", p.text.trim(), ""));
   }
 
   if (dto.setupVersions.length > 0) {
-    body.push("## Setup versions", "", "*Read-only history from BakerWriter.*", "");
+    body.push("## Setup versions", "", "*Read-only history from JokeBakery.*", "");
     dto.setupVersions.forEach((v, i) => body.push(`### v${i + 1}`, "", v.text.trim(), ""));
   }
 
@@ -536,9 +577,9 @@ export function parseJokeFile(content: string): ParsedJoke {
     setupRhythm: asRhythm(meta.setupRhythm),
     developmentRhythm: asRhythm(meta.developmentRhythm),
     punchlineRhythm: asRhythm(meta.punchlineRhythm),
-    setupIEN: asIEN(meta.setupIEN),
-    developmentIEN: asIEN(meta.developmentIEN),
-    punchlineIEN: asIEN(meta.punchlineIEN),
+    setupIEN: clampIEN(asIEN(meta.setupIEN), setup),
+    developmentIEN: clampIEN(asIEN(meta.developmentIEN), development),
+    punchlineIEN: clampIEN(asIEN(meta.punchlineIEN), punchline),
     additionalPunchlines: Array.isArray(meta.additionalPunchlines)
       ? meta.additionalPunchlines
       : [],
@@ -550,10 +591,35 @@ export function peekFrontmatter(content: string): Record<string, unknown> {
   return splitContent(content).fm;
 }
 
-/** Strip BakerWriter identity so a (conflict) copy isn't re-synced. */
+/**
+ * Strip JokeBakery identity (`bw-*` keys) so a (conflict) copy isn't re-synced,
+ * while keeping the user-facing properties (title, stage, families, …) - the
+ * copy exists precisely to preserve the losing version for a hand-merge.
+ * Textual filtering keeps whatever formatting the file already had; a dropped
+ * key's block-style continuation lines go with it.
+ */
 export function stripSyncIdentity(content: string): string {
-  const { body } = splitContent(content);
-  return body;
+  if (!content.startsWith("---")) return content;
+  const lines = content.split("\n");
+  let end = -1;
+  for (let i = 1; i < lines.length; i++) {
+    if (lines[i]!.trim() === "---") {
+      end = i;
+      break;
+    }
+  }
+  if (end === -1) return content;
+
+  const kept: string[] = [];
+  let dropping = false;
+  for (const line of lines.slice(1, end)) {
+    const key = /^([A-Za-z0-9_-]+)\s*:/.exec(line);
+    if (key) dropping = key[1]!.startsWith("bw-");
+    if (!dropping) kept.push(line);
+  }
+  const body = lines.slice(end + 1).join("\n").replace(/^\n+/, "");
+  if (kept.length === 0) return body;
+  return ["---", ...kept, "---", "", body].join("\n");
 }
 
 // ---------------------------------------------------------------------------

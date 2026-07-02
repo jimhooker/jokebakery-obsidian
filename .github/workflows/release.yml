@@ -23,9 +23,10 @@ jobs:
         with:
           node-version: "20.x"
 
-      - name: Build
+      - name: Test and build
         run: |
           npm ci
+          npm test
           npm run build
 
       - name: Create release

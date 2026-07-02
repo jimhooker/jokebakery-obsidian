@@ -1,13 +1,14 @@
-import { Plugin, type TAbstractFile } from "obsidian";
+import { App, Modal, Plugin, type TAbstractFile } from "obsidian";
 import {
   DEFAULT_SETTINGS,
-  type BakerWriterSyncSettings,
+  LEGACY_SERVER_URL,
+  type JokeBakerySyncSettings,
 } from "./types";
 import { SyncEngine } from "./sync";
-import { BakerWriterSettingTab } from "./settings";
+import { JokeBakerySettingTab } from "./settings";
 
-export default class BakerWriterSyncPlugin extends Plugin {
-  settings!: BakerWriterSyncSettings;
+export default class JokeBakerySyncPlugin extends Plugin {
+  settings!: JokeBakerySyncSettings;
   private statusBar?: HTMLElement;
   private autoSyncTimer?: number;
   private syncing = false;
@@ -15,17 +16,27 @@ export default class BakerWriterSyncPlugin extends Plugin {
   async onload(): Promise<void> {
     await this.loadSettings();
 
-    this.addSettingTab(new BakerWriterSettingTab(this.app, this));
+    this.addSettingTab(new JokeBakerySettingTab(this.app, this));
 
-    this.addRibbonIcon("refresh-cw", "Sync BakerWriter", () => this.runSync());
+    this.addRibbonIcon("refresh-cw", "Sync JokeBakery", () => this.runSync());
 
     this.statusBar = this.addStatusBarItem();
+    this.statusBar.addClass("mod-clickable");
+    this.statusBar.setAttribute("aria-label", "Sync JokeBakery");
+    this.statusBar.onClickEvent(() => void this.runSync());
     this.setStatus("idle");
 
     this.addCommand({
+      // Pre-rebrand id, kept so existing hotkey bindings survive.
       id: "bakerwriter-sync-now",
       name: "Sync now (two-way)",
       callback: () => this.runSync(),
+    });
+
+    this.addCommand({
+      id: "bakerwriter-full-resync",
+      name: "Full resync (re-pull everything)",
+      callback: () => this.forceResync(),
     });
 
     // Track vault deletes/renames of synced files so deletions propagate and
@@ -55,7 +66,7 @@ export default class BakerWriterSyncPlugin extends Plugin {
   }
 
   async loadSettings(): Promise<void> {
-    const data = (await this.loadData()) as Partial<BakerWriterSyncSettings> | null;
+    const data = (await this.loadData()) as Partial<JokeBakerySyncSettings> | null;
     this.settings = {
       ...DEFAULT_SETTINGS,
       ...(data ?? {}),
@@ -64,6 +75,12 @@ export default class BakerWriterSyncPlugin extends Plugin {
       records: data?.records ?? {},
       pendingDeletes: data?.pendingDeletes ?? [],
     };
+    // Pre-rebrand installs pointed at the old deploy URL. Migrate only the
+    // exact old default — a custom URL (e.g. localhost) is left alone.
+    if (this.settings.serverUrl === LEGACY_SERVER_URL) {
+      this.settings.serverUrl = DEFAULT_SETTINGS.serverUrl;
+      await this.saveSettings();
+    }
   }
 
   async saveSettings(): Promise<void> {
@@ -91,7 +108,13 @@ export default class BakerWriterSyncPlugin extends Plugin {
       const engine = new SyncEngine(
         this.app,
         this.settings,
-        () => this.saveSettings()
+        () => this.saveSettings(),
+        // A pile of queued deletions needs a human. Silent (auto) syncs hold
+        // them and keep going; a manual sync asks.
+        (count) =>
+          opts.silent
+            ? Promise.resolve(false)
+            : confirmMassDelete(this.app, count)
       );
       const summary = await engine.syncNow({ silent: opts.silent });
       this.setStatus(summary.errors.length ? "error" : "idle");
@@ -147,12 +170,12 @@ export default class BakerWriterSyncPlugin extends Plugin {
     if (!this.statusBar) return;
     let label: string;
     if (state === "syncing") {
-      label = "BakerWriter: syncing…";
+      label = "JokeBakery: syncing…";
     } else if (state === "error") {
-      label = "BakerWriter: sync error";
+      label = "JokeBakery: sync error";
     } else {
       const at = this.settings.lastSyncAt;
-      label = at ? `BakerWriter: synced ${hhmm(at)}` : "BakerWriter: idle";
+      label = at ? `JokeBakery: synced ${hhmm(at)}` : "JokeBakery: idle";
     }
     this.statusBar.setText(label);
   }
@@ -162,4 +185,55 @@ function hhmm(iso: string): string {
   const d = new Date(iso);
   const pad = (n: number) => String(n).padStart(2, "0");
   return `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+function confirmMassDelete(app: App, count: number): Promise<boolean> {
+  return new Promise((resolve) => new ConfirmMassDeleteModal(app, count, resolve).open());
+}
+
+/** "Really delete N items on the server?" - resolves false unless explicitly
+ *  confirmed (closing the modal any other way counts as "not now"). */
+class ConfirmMassDeleteModal extends Modal {
+  private answered = false;
+
+  constructor(
+    app: App,
+    private count: number,
+    private resolveAnswer: (ok: boolean) => void
+  ) {
+    super(app);
+  }
+
+  private answer(ok: boolean): void {
+    if (this.answered) return;
+    this.answered = true;
+    this.resolveAnswer(ok);
+  }
+
+  onOpen(): void {
+    this.titleEl.setText("Delete synced items in JokeBakery?");
+    this.contentEl.createEl("p", {
+      text:
+        `${this.count} synced files were deleted from this vault. Pushing that ` +
+        "will delete all of them in JokeBakery too (recoverable from the " +
+        "database, but not from the app). If the files went missing by " +
+        "accident, choose Not now and run a Full resync to restore them instead.",
+    });
+    const buttons = this.contentEl.createDiv({ cls: "modal-button-container" });
+    const del = buttons.createEl("button", {
+      text: `Delete ${this.count} items`,
+      cls: "mod-warning",
+    });
+    del.addEventListener("click", () => {
+      this.answer(true);
+      this.close();
+    });
+    const keep = buttons.createEl("button", { text: "Not now" });
+    keep.addEventListener("click", () => this.close());
+  }
+
+  onClose(): void {
+    this.answer(false);
+    this.contentEl.empty();
+  }
 }

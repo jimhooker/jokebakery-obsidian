@@ -1,8 +1,8 @@
-# BakerWriter Sync (Obsidian plugin)
+# JokeBakery Sync (Obsidian plugin)
 
-Two-way sync between [BakerWriter](https://github.com/jimhooker/bakerwriter) and an
+Two-way sync between [JokeBakery](https://jokebakery.com) and an
 Obsidian vault. Your **sprints**, **jokes** and **lists** become Markdown files
-you can read and edit in Obsidian; edits flow back to BakerWriter on the next
+you can read and edit in Obsidian; edits flow back to JokeBakery on the next
 sync.
 
 ## What you get in the vault
@@ -27,21 +27,21 @@ sync.
   properties; rhythm/IEN markup rides in an opaque `bw-meta` property.
 - **Lists** → `Lists/<slug>.md`. A user-owned, reusable list: its items are a
   plain bullet list in the body; edit them here. A list can be attached to many
-  jokes (attach/detach in BakerWriter).
+  jokes (attach/detach in JokeBakery).
 
 A joke's `## Lists` section is now a **read-only** list of the labels attached to
 that joke — open the matching note in `Lists/` to edit a list's contents.
 `## Alternative punchlines` and `## Setup versions` are likewise read-only —
-manage those in BakerWriter.
+manage those in JokeBakery.
 
 ## Setup
 
-1. In BakerWriter, go to **Settings → Obsidian sync** and **create an access
+1. In JokeBakery, go to **Settings → Obsidian sync** and **create an access
    token**. Copy it (you only see it once).
 2. Install this plugin (see below), enable it, open its settings, and fill in:
-   - **Server URL** — your BakerWriter address, e.g. `https://bakerwriter.vercel.app`
+   - **Server URL** — your JokeBakery address, e.g. `https://jokebakery.com`
    - **Access token** — the token you just created
-   - **Vault folder** — defaults to `BakerWriter`
+   - **Vault folder** — defaults to `JokeBakery`
 3. Click **Test connection**, then **Sync now**. Auto-sync (on startup + on a
    timer) is on by default.
 
@@ -55,7 +55,7 @@ manage those in BakerWriter.
 - **New list:** add a note in `<folder>/Lists`. The note title (or `label`
   property) is the list name; write one item per bullet line.
 
-On the next sync these are created in BakerWriter and get their `bw-id` written
+On the next sync these are created in JokeBakery and get their `bw-id` written
 back into the file.
 
 ## Conflicts
@@ -68,11 +68,16 @@ sides between syncs, nothing is lost: the losing version is written to
 
 Deletions sync **both ways**:
 
-- Delete a joke, sprint, or list in **BakerWriter** → its file is removed from
-  the vault on the next pull.
-- Delete a synced **file in Obsidian** → the item is removed in BakerWriter on
-  the next push. (BakerWriter keeps it as a soft-deleted tombstone, so it's
+- Delete a joke, sprint, or list in **JokeBakery** → its file is removed from
+  the vault on the next pull (it goes to your trash, following Obsidian's
+  "Deleted files" setting, so it's recoverable).
+- Delete a synced **file in Obsidian** → the item is removed in JokeBakery on
+  the next push. (JokeBakery keeps it as a soft-deleted tombstone, so it's
   recoverable in the database if needed.)
+
+As a safety net, if 20 or more deletions are queued at once (e.g. the sync
+folder itself was deleted), they are held back: auto-syncs skip them and a
+manual **Sync now** asks for confirmation before deleting anything server-side.
 
 Caveat: Obsidian-side deletions are detected while the plugin is running. Delete
 items as **individual files** — deleting a synced file you no longer want is the
@@ -83,7 +88,9 @@ and restores it.
 ## Limitations (v1)
 
 - Rhythm/IEN word-index markup and alternative punchlines are **pull-only** —
-  edit them in BakerWriter, not Obsidian.
+  edit them in JokeBakery, not Obsidian. If you delete lines from a slot in
+  Obsidian, stale IEN voice tags past the new line count are dropped on push;
+  reordering lines can still leave tags on the wrong line (fix in JokeBakery).
 
 ## Installing
 
@@ -94,28 +101,31 @@ The easiest way to add this to Obsidian today:
 1. Install the **BRAT** community plugin (Beta Reviewer's Auto-update Tool) and
    enable it.
 2. BRAT → **Add Beta plugin** → paste this repo:
-   `https://github.com/jimhooker/bakerwriter-obsidian`
+   `https://github.com/jimhooker/jokebakery-obsidian`
 3. BRAT installs the latest release. In Obsidian go to **Settings → Community
-   plugins** and enable **BakerWriter Sync**, then configure it (see *Setup*).
+   plugins** and enable **JokeBakery Sync**, then configure it (see *Setup*).
 
 BRAT keeps the plugin updated as new releases are published here.
 
 ### Manual
 
 1. Download `main.js`, `manifest.json` and `versions.json` from the
-   [latest release](https://github.com/jimhooker/bakerwriter-obsidian/releases),
+   [latest release](https://github.com/jimhooker/jokebakery-obsidian/releases),
    or build them yourself with `npm install && npm run build`.
-2. Copy them into `<your-vault>/.obsidian/plugins/bakerwriter-sync/`.
-3. In Obsidian: **Settings → Community plugins**, enable **BakerWriter Sync**.
+2. Copy them into `<your-vault>/.obsidian/plugins/bakerwriter-sync/`. (The
+   folder name is the plugin id, kept from before the JokeBakery rebrand so
+   existing installs upgrade in place.)
+3. In Obsidian: **Settings → Community plugins**, enable **JokeBakery Sync**.
 
 ### Develop
 
 `npm run dev` runs esbuild in watch mode. Symlink this folder into your vault's
-`.obsidian/plugins/` to iterate live.
+`.obsidian/plugins/` to iterate live. `npm test` runs the serialization
+round-trip suite (vitest) — run it after touching `src/serialize.ts`.
 
 ## How it works
 
-The plugin talks to BakerWriter's `/api/sync` REST API with a Bearer token.
+The plugin talks to JokeBakery's `/api/sync` REST API with a Bearer token.
 Each sync runs **push** (send new/edited vault files) then **pull** (write
 changed server items into the vault). All Markdown ⇄ JSON translation happens
 here in the plugin; the server only ever speaks JSON. See `src/serialize.ts`
