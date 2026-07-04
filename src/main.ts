@@ -147,6 +147,13 @@ export default class JokeBakerySyncPlugin extends Plugin {
       (r) => r.path === file.path
     );
     if (!record) return;
+    if (record.type === "ideas") {
+      // Ideas.md is a virtual view of the inbox, not an entity: deleting the
+      // file must not archive or delete ideas server-side. Keep the record so
+      // the file is recreated the next time the inbox changes (or on a force
+      // re-sync).
+      return;
+    }
     if (!this.settings.pendingDeletes.some((d) => d.id === record.id)) {
       this.settings.pendingDeletes.push({ type: record.type, id: record.id });
     }

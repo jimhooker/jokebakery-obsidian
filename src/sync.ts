@@ -20,15 +20,18 @@ import { JokeBakeryApi } from "./api";
 import {
   CONFLICTS_SUBDIR,
   CRASHES_SUBDIR,
+  IDEAS_FILENAME,
   JOKES_SUBDIR,
   LISTS_SUBDIR,
   SPRINTS_SUBDIR,
   crashToMarkdown,
   dateFromFilename,
   hashString,
+  ideasToMarkdown,
   jokeToMarkdown,
   listToMarkdown,
   parseCrashFile,
+  parseIdeasFile,
   parseJokeFile,
   parseListFile,
   parseSprintFile,
@@ -37,20 +40,24 @@ import {
   sprintToMarkdown,
   stripSyncIdentity,
   type ParsedCrash,
+  type ParsedIdeas,
   type ParsedJoke,
   type ParsedList,
   type ParsedSprint,
 } from "./serialize";
-import type {
-  JokeBakerySyncSettings,
-  CrashDTO,
-  CrashPush,
-  JokeDTO,
-  JokePush,
-  ListDTO,
-  ListPush,
-  SprintDTO,
-  SprintPush,
+import {
+  IDEAS_DOC_ID,
+  type JokeBakerySyncSettings,
+  type CrashDTO,
+  type CrashPush,
+  type IdeasDocDTO,
+  type IdeasPush,
+  type JokeDTO,
+  type JokePush,
+  type ListDTO,
+  type ListPush,
+  type SprintDTO,
+  type SprintPush,
 } from "./types";
 
 const EMPTY_RHYTHM = { keys: [], colours: [] };
@@ -85,7 +92,7 @@ function emptySummary(): SyncSummary {
 
 interface ScannedFile {
   file: TFile;
-  type: "sprint" | "joke" | "list" | "crash";
+  type: "sprint" | "joke" | "list" | "crash" | "ideas";
   content: string;
   hash: string;
   id?: string;
@@ -171,12 +178,15 @@ export class SyncEngine {
     return true;
   }
 
-  private defaultPath(dto: SprintDTO | JokeDTO | ListDTO | CrashDTO): string {
+  private defaultPath(
+    dto: SprintDTO | JokeDTO | ListDTO | CrashDTO | IdeasDocDTO
+  ): string {
     if (dto.type === "sprint") return `${this.sub(SPRINTS_SUBDIR)}/${dto.date}.md`;
     if (dto.type === "list")
       return `${this.sub(LISTS_SUBDIR)}/${slugify(dto.label)}.md`;
     if (dto.type === "crash")
       return `${this.sub(CRASHES_SUBDIR)}/${slugify(`${dto.aText}-x-${dto.bText}`)}.md`;
+    if (dto.type === "ideas") return this.sub(IDEAS_FILENAME);
     return `${this.sub(JOKES_SUBDIR)}/${slugify(dto.title)}.md`;
   }
 
@@ -189,15 +199,25 @@ export class SyncEngine {
   // -- scanning ------------------------------------------------------------
 
   private async scanLocalFiles(): Promise<ScannedFile[]> {
+    const ideasPath = this.sub(IDEAS_FILENAME);
     const sprintsDir = this.sub(SPRINTS_SUBDIR) + "/";
     const jokesDir = this.sub(JOKES_SUBDIR) + "/";
     const listsDir = this.sub(LISTS_SUBDIR) + "/";
     const crashesDir = this.sub(CRASHES_SUBDIR) + "/";
     const out: ScannedFile[] = [];
 
+    // The ideas inbox is a virtual doc keyed by a fixed id, not a folder scan:
+    // once it's been synced once, `records[IDEAS_DOC_ID].path` is the file
+    // that actually carries it, even after the user renames or moves it out
+    // of the default location. Without this, a renamed Ideas.md silently
+    // stops syncing (it no longer matches the default path, and pullRemote's
+    // record lookup by id also wouldn't find it - see the write side below).
+    const ideasRecordPath = this.settings.records[IDEAS_DOC_ID]?.path;
+
     for (const file of this.app.vault.getMarkdownFiles()) {
-      let type: "sprint" | "joke" | "list" | "crash" | null = null;
-      if (file.path.startsWith(sprintsDir)) type = "sprint";
+      let type: "sprint" | "joke" | "list" | "crash" | "ideas" | null = null;
+      if (file.path === ideasPath || file.path === ideasRecordPath) type = "ideas";
+      else if (file.path.startsWith(sprintsDir)) type = "sprint";
       else if (file.path.startsWith(jokesDir)) type = "joke";
       else if (file.path.startsWith(listsDir)) type = "list";
       else if (file.path.startsWith(crashesDir)) type = "crash";
@@ -317,6 +337,15 @@ export class SyncEngine {
     };
   }
 
+  private ideasDTO(
+    p: ParsedIdeas,
+    id: string,
+    createdAt: string,
+    updatedAt: string
+  ): IdeasDocDTO {
+    return { type: "ideas", id, items: p.items, createdAt, updatedAt };
+  }
+
   // -- push ----------------------------------------------------------------
 
   private async pushLocal(api: JokeBakeryApi, summary: SyncSummary): Promise<void> {
@@ -326,6 +355,7 @@ export class SyncEngine {
     const jokes: JokePush[] = [];
     const lists: ListPush[] = [];
     const crashes: CrashPush[] = [];
+    const ideasArr: IdeasPush[] = [];
 
     for (const s of scanned) {
       const record = s.id ? this.settings.records[s.id] : undefined;
@@ -368,6 +398,14 @@ export class SyncEngine {
           bItemId: parsed.bItemId,
           note: parsed.note,
         });
+      } else if (s.type === "ideas") {
+        const parsed = parseIdeasFile(s.content);
+        ideasArr.push({
+          ref,
+          id: parsed.id,
+          baseUpdatedAt,
+          items: parsed.items,
+        });
       } else {
         const parsed = parseJokeFile(s.content);
         jokes.push({ ref, baseUpdatedAt, ...parsed });
@@ -389,11 +427,12 @@ export class SyncEngine {
       jokes.length === 0 &&
       lists.length === 0 &&
       crashes.length === 0 &&
+      ideasArr.length === 0 &&
       deletes.length === 0
     )
       return;
 
-    const res = await api.push({ sprints, jokes, lists, crashes, deletes });
+    const res = await api.push({ sprints, jokes, lists, crashes, ideas: ideasArr, deletes });
 
     for (const r of res.results) {
       // A "deleted" result means the server has no live copy: either a delete
@@ -427,7 +466,9 @@ export class SyncEngine {
                 ? listToMarkdown(server)
                 : server.type === "crash"
                   ? crashToMarkdown(server)
-                  : jokeToMarkdown(server);
+                  : server.type === "ideas"
+                    ? ideasToMarkdown(server)
+                    : jokeToMarkdown(server);
           await this.writeFile(entry.file.path, content);
           this.settings.records[server.id] = {
             id: server.id,
@@ -461,6 +502,22 @@ export class SyncEngine {
       } else if (entry.type === "crash") {
         const parsed = parseCrashFile(entry.content);
         content = crashToMarkdown(this.crashDTO(parsed, r.id, createdAt, r.updatedAt));
+      } else if (entry.type === "ideas") {
+        // The pushed file is NOT the server state for this virtual doc: the
+        // server just merged our bullets against everything the app captured
+        // since the last pull, and its merged doc can contain bullets our
+        // local parse never had (plus canonical ^ids for hand-typed
+        // bullets that our own re-parse here would mint differently). Write
+        // the server's merged doc so the note - and the base we record for
+        // it - both match what the server actually stored. Fall back to the
+        // local re-serialize only against an older server build that hasn't
+        // started returning `server` on ideas pushes yet.
+        if (r.server && r.server.type === "ideas") {
+          content = ideasToMarkdown(r.server);
+        } else {
+          const parsed = parseIdeasFile(entry.content);
+          content = ideasToMarkdown(this.ideasDTO(parsed, r.id, createdAt, r.updatedAt));
+        }
       } else {
         const parsed = parseJokeFile(entry.content);
         content = jokeToMarkdown(this.jokeDTO(parsed, r.id, createdAt, r.updatedAt));
@@ -482,12 +539,13 @@ export class SyncEngine {
 
   private async pullRemote(api: JokeBakeryApi, summary: SyncSummary): Promise<void> {
     const res = await api.changes(this.settings.lastSyncCursor);
-    const items: Array<SprintDTO | JokeDTO | ListDTO | CrashDTO> = [
+    const items: Array<SprintDTO | JokeDTO | ListDTO | CrashDTO | IdeasDocDTO> = [
       ...res.sprints,
       ...res.jokes,
       // Guard for an older server build that doesn't send these collections.
       ...(res.lists ?? []),
       ...(res.crashes ?? []),
+      ...(res.ideas ? [res.ideas] : []),
     ];
 
     for (const dto of items) {
@@ -498,11 +556,28 @@ export class SyncEngine {
             ? listToMarkdown(dto)
             : dto.type === "crash"
               ? crashToMarkdown(dto)
-              : jokeToMarkdown(dto);
+              : dto.type === "ideas"
+                ? ideasToMarkdown(dto)
+                : jokeToMarkdown(dto);
       const newHash = hashString(content);
       const record = this.settings.records[dto.id];
 
       if (!record) {
+        // The ideas inbox is a virtual singleton doc, not a per-row entity:
+        // if a file already sits at its canonical path with no record yet,
+        // that's the plugin's own not-yet-pushed Ideas.md (first sync on a
+        // fresh vault, or a record lost some other way) - NOT a second
+        // document to fork with uniquePath. Forking here would silently turn
+        // sync one-way (the pulled copy gets a record and keeps updating;
+        // the pre-existing file never gets pushed nor pulled into again).
+        // Skip this dto for this cycle; the pre-existing file will get
+        // pushed on the next sync (pushLocal scans it, since it matches
+        // ideasPath), merge server-side, and come back with a canonical
+        // result - at which point the record exists and pulls proceed
+        // normally. Every other entity keeps the uniquePath fork behavior.
+        if (dto.type === "ideas" && this.exists(this.defaultPath(dto))) {
+          continue;
+        }
         const path = await this.uniquePath(this.defaultPath(dto));
         await this.writeFile(path, content);
         this.settings.records[dto.id] = {

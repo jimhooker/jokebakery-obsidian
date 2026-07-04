@@ -30,6 +30,7 @@ import { parseYaml } from "obsidian";
 import type {
   AdditionalPunchlineDTO,
   CrashDTO,
+  IdeasDocDTO,
   IENValue,
   JokeDTO,
   JokePush,
@@ -54,6 +55,7 @@ export const JOKES_SUBDIR = "Jokes";
 export const LISTS_SUBDIR = "Lists";
 export const CONFLICTS_SUBDIR = "Conflicts";
 export const CRASHES_SUBDIR = "Crashes";
+export const IDEAS_FILENAME = "Ideas.md";
 
 const EMPTY_RHYTHM: Rhythm = { keys: [], colours: [] };
 
@@ -778,6 +780,52 @@ export function parseCrashFile(content: string): ParsedCrash {
     bText: b?.text ?? "",
     note: noteLines.join("\n").trim(),
   };
+}
+
+// ---------------------------------------------------------------------------
+// Ideas inbox (a single note, Ideas.md, at the sync folder root)
+
+export function ideasToMarkdown(dto: IdeasDocDTO): string {
+  const fm = frontmatter([
+    ["bw-type", "ideas"],
+    ["bw-id", emitScalar(dto.id)],
+    ["bw-created", emitScalar(dto.createdAt)],
+    ["bw-updated", emitScalar(dto.updatedAt)],
+  ]);
+
+  const body: string[] = ["# Ideas", ""];
+  if (dto.items.length === 0) body.push("*(empty)*");
+  // Same bullet contract as list notes: the stable id rides as an Obsidian
+  // block reference. New bullets typed by hand get ids minted on parse.
+  else for (const it of dto.items) body.push(`- ${it.text} ^${it.id}`);
+
+  return fm + body.join("\n").trimEnd() + "\n";
+}
+
+export interface ParsedIdeas {
+  id?: string;
+  items: { id: string; text: string }[];
+}
+
+/** Parse Ideas.md. Every bullet (indented or not) is an idea - the inbox is
+ *  flat. Bullets without a trailing `^id` get a fresh one. Headings and the
+ *  `*(empty)*` placeholder are ignored. */
+export function parseIdeasFile(content: string): ParsedIdeas {
+  const { fm, body } = splitContent(content);
+  const id = typeof fm["bw-id"] === "string" ? fm["bw-id"] : undefined;
+
+  const items: { id: string; text: string }[] = [];
+  for (const raw of body.split("\n")) {
+    if (/^\s*#{1,6}\s/.test(raw)) continue;
+    const m = /^\s*[-*]\s+(.*)$/.exec(raw);
+    if (!m) continue;
+    const rest = m[1];
+    const ref = /^(.*?)\s+\^([A-Za-z0-9-]+)\s*$/.exec(rest);
+    const text = (ref ? ref[1] : rest).trim();
+    if (!text || text === "*(empty)*") continue;
+    items.push({ id: ref ? ref[2] : newItemId(), text });
+  }
+  return { id, items };
 }
 
 export { type SprintPush, type JokePush };

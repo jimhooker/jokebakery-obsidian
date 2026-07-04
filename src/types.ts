@@ -121,8 +121,21 @@ export interface JokeDTO {
   updatedAt: string;
 }
 
+/** The ideas inbox as ONE virtual synced document (Ideas.md). The id is the
+ *  fixed constant IDEAS_DOC_ID; bullets are active ideas. Pushes merge
+ *  per-bullet server-side, so this entity never produces conflicts. */
+export const IDEAS_DOC_ID = "ideas-inbox";
+
+export interface IdeasDocDTO {
+  type: "ideas";
+  id: string;
+  items: { id: string; text: string }[];
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface Deletion {
-  type: "sprint" | "joke" | "list" | "crash";
+  type: "sprint" | "joke" | "list" | "crash" | "ideas";
   id: string;
 }
 
@@ -133,6 +146,7 @@ export interface ChangesResult {
   lists: ListDTO[];
   crashes: CrashDTO[];
   deletions: Deletion[];
+  ideas?: IdeasDocDTO | null;
 }
 
 // --- Push (plugin -> server) ---
@@ -205,11 +219,19 @@ export interface JokePush {
   lists?: JokeListPush[];
 }
 
+export interface IdeasPush {
+  ref: string;
+  id?: string;
+  baseUpdatedAt?: string;
+  items: { id: string; text: string }[];
+}
+
 export interface PushBody {
   sprints?: SprintPush[];
   jokes?: JokePush[];
   lists?: ListPush[];
   crashes?: CrashPush[];
+  ideas?: IdeasPush[];
   deletes?: Deletion[];
 }
 
@@ -222,11 +244,11 @@ export type PushStatus =
 
 export interface PushResult {
   ref: string;
-  type: "sprint" | "joke" | "list" | "crash";
+  type: "sprint" | "joke" | "list" | "crash" | "ideas";
   status: PushStatus;
   id?: string;
   updatedAt?: string;
-  server?: SprintDTO | JokeDTO | ListDTO | CrashDTO;
+  server?: SprintDTO | JokeDTO | ListDTO | CrashDTO | IdeasDocDTO;
   message?: string;
 }
 
@@ -239,7 +261,7 @@ export interface PushResponse {
 
 export interface SyncRecord {
   id: string;
-  type: "sprint" | "joke" | "list" | "crash";
+  type: "sprint" | "joke" | "list" | "crash" | "ideas";
   /** Vault-relative path of the file representing this item. */
   path: string;
   /** Server updatedAt we last reconciled with - our conflict-detection base. */

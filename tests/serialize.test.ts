@@ -12,9 +12,11 @@
 import { describe, expect, it } from "vitest";
 import {
   crashToMarkdown,
+  ideasToMarkdown,
   jokeToMarkdown,
   listToMarkdown,
   parseCrashFile,
+  parseIdeasFile,
   parseJokeFile,
   parseListFile,
   parseSprintFile,
@@ -22,7 +24,7 @@ import {
   sprintToMarkdown,
   stripSyncIdentity,
 } from "../src/serialize";
-import type { CrashDTO, JokeDTO, ListDTO, SprintDTO } from "../src/types";
+import type { CrashDTO, IdeasDocDTO, JokeDTO, ListDTO, SprintDTO } from "../src/types";
 
 function jokeDTO(overrides: Partial<JokeDTO> = {}): JokeDTO {
   return {
@@ -59,6 +61,20 @@ function jokeDTO(overrides: Partial<JokeDTO> = {}): JokeDTO {
     ],
     lists: [{ id: "l1", label: "Airports", items: [], createdAt: "2026-01-01T00:00:00Z" }],
     setupVersions: [],
+    createdAt: "2026-01-01T00:00:00Z",
+    updatedAt: "2026-01-02T00:00:00Z",
+    ...overrides,
+  };
+}
+
+function ideasDTO(overrides: Partial<IdeasDocDTO> = {}): IdeasDocDTO {
+  return {
+    type: "ideas",
+    id: "id_123",
+    items: [
+      { id: "it1", text: "first idea" },
+      { id: "it2", text: "second idea" },
+    ],
     createdAt: "2026-01-01T00:00:00Z",
     updatedAt: "2026-01-02T00:00:00Z",
     ...overrides,
@@ -305,5 +321,90 @@ describe("crash round trip", () => {
     expect(parsed.bItemId).toBe("it9");
     expect(parsed.bText).toBe("security theatre");
     expect(parsed.note).toBe("a drill at security");
+  });
+});
+
+describe("ideas round trip", () => {
+  it("preserves id and items with their ids", () => {
+    const dto = ideasDTO();
+    const parsed = parseIdeasFile(ideasToMarkdown(dto));
+    expect(parsed.id).toBe("id_123");
+    expect(parsed.items).toEqual(dto.items);
+  });
+
+  it("renders empty doc with placeholder and parses back to empty", () => {
+    const dto = ideasDTO({ items: [] });
+    const md = ideasToMarkdown(dto);
+    expect(md).toContain("*(empty)*");
+    const parsed = parseIdeasFile(md);
+    expect(parsed.id).toBe("id_123");
+    expect(parsed.items).toEqual([]);
+  });
+
+  it("assigns fresh ids to hand-typed bullets without block refs", () => {
+    const md = ["---", "bw-id: id_456", "---", "", "# Ideas", "", "- first item", "- second item"].join("\n");
+    const parsed = parseIdeasFile(md);
+    expect(parsed.id).toBe("id_456");
+    expect(parsed.items).toHaveLength(2);
+    expect(parsed.items[0]!.text).toBe("first item");
+    expect(parsed.items[0]!.id).toMatch(/^[a-z0-9]{12}$/);
+    expect(parsed.items[1]!.text).toBe("second item");
+    expect(parsed.items[1]!.id).toMatch(/^[a-z0-9]{12}$/);
+  });
+
+  it("keeps existing block refs and mints fresh ids for new bullets", () => {
+    const md = ["---", "label: Ideas", "---", "", "- old idea ^abc123", "- brand new idea"].join("\n");
+    const parsed = parseIdeasFile(md);
+    expect(parsed.items).toHaveLength(2);
+    expect(parsed.items[0]).toEqual({ id: "abc123", text: "old idea" });
+    expect(parsed.items[1]!.text).toBe("brand new idea");
+    expect(parsed.items[1]!.id).toMatch(/^[a-z0-9]{12}$/);
+  });
+
+  it("parses indented bullets as flat ideas (inbox style)", () => {
+    const md = [
+      "---",
+      "bw-id: id_789",
+      "---",
+      "",
+      "# Ideas",
+      "",
+      "- top level ^top1",
+      "    - indented ^ind1",
+      "        - deeply indented ^deep1",
+      "- another top ^top2",
+    ].join("\n");
+    const parsed = parseIdeasFile(md);
+    expect(parsed.items).toHaveLength(4);
+    expect(parsed.items[0]).toEqual({ id: "top1", text: "top level" });
+    expect(parsed.items[1]).toEqual({ id: "ind1", text: "indented" });
+    expect(parsed.items[2]).toEqual({ id: "deep1", text: "deeply indented" });
+    expect(parsed.items[3]).toEqual({ id: "top2", text: "another top" });
+  });
+
+  it("ignores headings and the H1 title on parse", () => {
+    const md = [
+      "---",
+      "bw-id: id_999",
+      "---",
+      "",
+      "# Ideas",
+      "",
+      "## Section heading",
+      "",
+      "- idea one ^id1",
+      "",
+      "### Subsection",
+      "",
+      "- idea two ^id2",
+      "",
+      "some freeform text",
+    ].join("\n");
+    const parsed = parseIdeasFile(md);
+    expect(parsed.id).toBe("id_999");
+    expect(parsed.items).toEqual([
+      { id: "id1", text: "idea one" },
+      { id: "id2", text: "idea two" },
+    ]);
   });
 });
