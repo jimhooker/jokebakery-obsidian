@@ -14,7 +14,7 @@ export interface Rhythm {
   colours: number[];
 }
 
-export type IENValue = "I" | "E" | "N" | null;
+export type IENValue = "I" | "E" | "N" | "A" | null;
 
 /** A list item with a stable id, encoded in markdown as `- text ^id` (an
  *  Obsidian block reference). Mirrors the server's ListItem. `afterthoughts`

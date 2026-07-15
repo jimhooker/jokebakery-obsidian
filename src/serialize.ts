@@ -60,10 +60,11 @@ export const IDEAS_FILENAME = "Ideas.md";
 const EMPTY_RHYTHM: Rhythm = { keys: [], colours: [] };
 
 /** The IEN voice names, shouted. Mirrors IEN_LABELS in src/lib/ien-meta.ts. */
-const IEN_VOICE: Record<"I" | "E" | "N", string> = {
+const IEN_VOICE: Record<"I" | "E" | "N" | "A", string> = {
   I: "INTERIOR",
   E: "EXTERIOR",
   N: "NARRATOR",
+  A: "ACT OUT",
 };
 
 // ---------------------------------------------------------------------------
