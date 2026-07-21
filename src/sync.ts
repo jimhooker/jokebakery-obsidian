@@ -46,6 +46,7 @@ import {
   type ParsedSprint,
 } from "./serialize";
 import {
+  CLIENT_PROTOCOL_VERSION,
   IDEAS_DOC_ID,
   type JokeBakerySyncSettings,
   type CrashDTO,
@@ -261,6 +262,7 @@ export class SyncEngine {
       id,
       title: p.title ?? deriveTitle(p.setup ?? ""),
       premise: p.premise ?? "",
+      hinge: p.hinge ?? "",
       keyWords: p.keyWords ?? [],
       setup: p.setup ?? "",
       development: p.development ?? "",
@@ -432,7 +434,15 @@ export class SyncEngine {
     )
       return;
 
-    const res = await api.push({ sprints, jokes, lists, crashes, ideas: ideasArr, deletes });
+    const res = await api.push({
+      sprints,
+      jokes,
+      lists,
+      crashes,
+      ideas: ideasArr,
+      deletes,
+      protocolVersion: CLIENT_PROTOCOL_VERSION,
+    });
 
     for (const r of res.results) {
       // A "deleted" result means the server has no live copy: either a delete

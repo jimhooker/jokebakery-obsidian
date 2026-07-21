@@ -60,11 +60,10 @@ export const IDEAS_FILENAME = "Ideas.md";
 const EMPTY_RHYTHM: Rhythm = { keys: [], colours: [] };
 
 /** The IEN voice names, shouted. Mirrors IEN_LABELS in src/lib/ien-meta.ts. */
-const IEN_VOICE: Record<"I" | "E" | "N" | "A", string> = {
+const IEN_VOICE: Record<"I" | "E" | "N", string> = {
   I: "INTERIOR",
   E: "EXTERIOR",
   N: "NARRATOR",
-  A: "ACT OUT",
 };
 
 // ---------------------------------------------------------------------------
@@ -417,6 +416,7 @@ export function jokeToMarkdown(dto: JokeDTO): string {
     ["bw-updated", emitScalar(dto.updatedAt)],
     ["title", emitScalar(dto.title)],
     ["premise", emitScalar(dto.premise)],
+    ["hinge", emitScalar(dto.hinge)],
     ["key-words", emitArray(dto.keyWords)],
     ["stage", String(dto.stage)],
     ["families", emitArray(dto.families)],
@@ -556,6 +556,16 @@ export function parseJokeFile(content: string): ParsedJoke {
     id: typeof fm["bw-id"] === "string" ? fm["bw-id"] : undefined,
     title: asStr(fm["title"]) || undefined,
     premise: asStr(fm["premise"]),
+    // Key-absent must stay `undefined`, not `""`: a vault note synced before
+    // `hinge` existed has no `hinge:` line, and asStr(undefined) would
+    // fabricate "" - pushLocal then sends that as a real value (JSON.stringify
+    // only drops an actual `undefined`), so the server's `p.hinge !==
+    // undefined` guard would apply it and silently wipe a hinge set on the
+    // web. `premise` has this same latent risk (asStr defaults a missing key
+    // to "" too) - leaving it as-is here since it predates this branch and
+    // fixing it isn't this change's scope, but it should get the same
+    // presence-check treatment in a follow-up.
+    hinge: "hinge" in fm ? asStr(fm["hinge"]) : undefined,
     keyWords: asStrArr(fm["key-words"]),
     stage: asNum(fm["stage"]),
     families: asStrArr(fm["families"]),
@@ -628,6 +638,37 @@ export function stripSyncIdentity(content: string): string {
 // ---------------------------------------------------------------------------
 // List (its own note under Lists/)
 
+/**
+ * Structural nesting id regexes. MUST stay in lockstep with src/lib/list-md.ts
+ * in the app (this plugin is a separate esbuild project and cannot import it).
+ */
+const LIST_ID = "[A-Za-z0-9-]+";
+const LIST_PARENT_RE = new RegExp(`^(.*?)\\s+\\^\\^(${LIST_ID})\\s*$`);
+const LIST_REF_RE = new RegExp(`^(.*?)\\s+\\^(${LIST_ID})\\s*$`);
+
+interface ListTreeNode {
+  item: ListItemDTO;
+  children: ListTreeNode[];
+}
+
+/** Adjacency list -> ordered nested tree (mirror of src/lib/list-tree.ts
+ *  buildTree). Orphans (missing/dangling parentId) hoist to top level; siblings
+ *  keep array order. */
+function buildListTree(items: ListItemDTO[]): ListTreeNode[] {
+  const byId = new Map(items.map((it) => [it.id, it]));
+  const nodes = new Map<string, ListTreeNode>(
+    items.map((it) => [it.id, { item: it, children: [] }])
+  );
+  const roots: ListTreeNode[] = [];
+  for (const it of items) {
+    const pid = it.parentId ?? null;
+    const parent = pid && byId.has(pid) ? nodes.get(pid) : undefined;
+    if (parent && pid !== it.id) parent.children.push(nodes.get(it.id)!);
+    else roots.push(nodes.get(it.id)!);
+  }
+  return roots;
+}
+
 export function listToMarkdown(dto: ListDTO): string {
   const fm = frontmatter([
     ["bw-type", "list"],
@@ -642,12 +683,23 @@ export function listToMarkdown(dto: ListDTO): string {
   // Each item carries its stable id as an Obsidian block reference (`^id`), so
   // crashes that link to it survive edits and round-trip through the vault.
   // Afterthoughts hang under their item as indented sub-bullets (also id-tagged).
-  else
-    for (const it of dto.items) {
-      body.push(`- ${it.text} ^${it.id}`);
-      for (const a of it.afterthoughts ?? [])
-        body.push(`    - ${a.text} ^${a.id}`);
-    }
+  // Structural children (sync v5) nest 2 spaces per depth and carry an explicit
+  // trailing `^^<parentId>` token; a flat list (no parentId) emits neither the
+  // extra indent nor the token, so existing vault notes stay byte-identical.
+  else {
+    const walk = (nodes: ListTreeNode[], depth: number): void => {
+      for (const node of nodes) {
+        const it = node.item;
+        const pad = "  ".repeat(depth);
+        const parentTok = depth > 0 && it.parentId ? ` ^^${it.parentId}` : "";
+        body.push(`${pad}- ${it.text} ^${it.id}${parentTok}`);
+        for (const a of it.afterthoughts ?? [])
+          body.push(`    - ${a.text} ^${a.id}`);
+        walk(node.children, depth + 1);
+      }
+    };
+    walk(buildListTree(dto.items), 0);
+  }
 
   return fm + body.join("\n").trimEnd() + "\n";
 }
@@ -664,9 +716,12 @@ export interface ParsedList {
  * reference (`- text ^id`); bullets a human typed without one get a fresh id.
  * Headings (incl. the H1 title) and the `*(empty)*` placeholder are ignored.
  *
- * An *indented* bullet is an afterthought of the most recent top-level item -
- * the riff chain ("Cat" -> "dog" -> "bone"). An indented bullet with no item
- * above it (a malformed file) is promoted to a top-level item so nothing is lost.
+ * A structural child (sync v5) carries an explicit trailing `^^<parentId>`
+ * token; its `parentId` is read straight from that token (indentation is
+ * cosmetic). A bullet with no `^^` token that is *indented* is an afterthought
+ * of the most recent top-level item - the riff chain ("Cat" -> "dog" -> "bone").
+ * An indented bullet with no item above it (a malformed file) is promoted to a
+ * top-level item so nothing is lost.
  */
 export function parseListFile(content: string, fallbackLabel: string): ParsedList {
   const { fm, body } = splitContent(content);
@@ -681,17 +736,29 @@ export function parseListFile(content: string, fallbackLabel: string): ParsedLis
     const m = /^(\s*)[-*]\s+(.*)$/.exec(raw);
     if (!m) continue;
     const indented = m[1].length > 0;
-    // Pull a trailing `^id` block ref off the line *before* trimming, so a real
-    // id isn't lost and stray text isn't mistaken for one.
-    const rest = m[2];
-    const ref = /^(.*?)\s+\^([A-Za-z0-9-]+)\s*$/.exec(rest);
+    let rest = m[2];
+
+    // 1. Pull a trailing `^^<parentId>` (structural nesting) off first, so the
+    //    single-caret block-ref match below can't mistake it for the id.
+    let parentId: string | null = null;
+    const pm = LIST_PARENT_RE.exec(rest);
+    if (pm) {
+      parentId = pm[2];
+      rest = pm[1];
+    }
+
+    // 2. Pull a trailing `^id` block ref off *before* trimming, so a real id
+    //    isn't lost and stray text isn't mistaken for one.
+    const ref = LIST_REF_RE.exec(rest);
     const text = (ref ? ref[1] : rest).trim();
     if (!text || text === "*(empty)*") continue;
     const node: ListItemDTO = { id: ref ? ref[2] : newItemId(), text };
 
-    const parent = items[items.length - 1];
-    if (indented && parent) {
-      (parent.afterthoughts ??= []).push(node);
+    if (parentId !== null) {
+      node.parentId = parentId;
+      items.push(node);
+    } else if (indented && items.length > 0) {
+      (items[items.length - 1]!.afterthoughts ??= []).push(node);
     } else {
       items.push(node);
     }

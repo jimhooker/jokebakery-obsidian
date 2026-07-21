@@ -14,15 +14,19 @@ export interface Rhythm {
   colours: number[];
 }
 
-export type IENValue = "I" | "E" | "N" | "A" | null;
+export type IENValue = "I" | "E" | "N" | null;
 
 /** A list item with a stable id, encoded in markdown as `- text ^id` (an
  *  Obsidian block reference). Mirrors the server's ListItem. `afterthoughts`
- *  are riffs on the item, written as indented sub-bullets under it. */
+ *  are riffs on the item, written as indented sub-bullets under it. `parentId`
+ *  (sync v5) links an item to its structural parent for nesting; absent/null =
+ *  top-level. It round-trips via an explicit trailing `^^<parentId>` token so
+ *  flat notes stay byte-identical. */
 export interface ListItemDTO {
   id: string;
   text: string;
   afterthoughts?: ListItemDTO[];
+  parentId?: string | null;
 }
 
 export interface SprintDTO {
@@ -90,6 +94,7 @@ export interface JokeDTO {
   id: string;
   title: string;
   premise: string;
+  hinge: string;
   keyWords: string[];
   setup: string;
   development: string;
@@ -191,6 +196,7 @@ export interface JokePush {
   baseUpdatedAt?: string;
   title?: string;
   premise?: string;
+  hinge?: string;
   keyWords?: string[];
   setup?: string;
   development?: string;
@@ -226,6 +232,12 @@ export interface IdeasPush {
   items: { id: string; text: string }[];
 }
 
+/** The sync wire version this plugin speaks. Sent on every push so the server
+ *  knows which fields we can actually express: a build that stayed silent here
+ *  predates list nesting, and the server preserves `parentId` for it rather
+ *  than reading our flat items array as "un-nest everything". */
+export const CLIENT_PROTOCOL_VERSION = 5;
+
 export interface PushBody {
   sprints?: SprintPush[];
   jokes?: JokePush[];
@@ -233,6 +245,7 @@ export interface PushBody {
   crashes?: CrashPush[];
   ideas?: IdeasPush[];
   deletes?: Deletion[];
+  protocolVersion?: number;
 }
 
 export type PushStatus =
