@@ -28,6 +28,7 @@ import {
   dateFromFilename,
   hashString,
   ideasToMarkdown,
+  isFileSyncConflictCopy,
   jokeToMarkdown,
   listToMarkdown,
   parseCrashFile,
@@ -108,6 +109,10 @@ export class SyncEngine {
     private confirmMassDelete: (count: number) => Promise<boolean> = () =>
       Promise.resolve(false)
   ) {}
+
+  /** Filled by the scan when several vault files claim one `bw-id`; drained
+   *  into the sync summary so the user is told which copy is being ignored. */
+  private duplicateIdWarnings: string[] = [];
 
   // -- path helpers --------------------------------------------------------
 
@@ -224,12 +229,57 @@ export class SyncEngine {
       else if (file.path.startsWith(crashesDir)) type = "crash";
       if (!type) continue;
 
+      // A file-sync tool (Syncthing, Dropbox, iCloud) drops a COPY of a note
+      // beside the original when two devices edited it. The copy keeps the
+      // `bw-id` frontmatter, so without this it reads as a second file for the
+      // same entity - and since `records` holds one hash per id, whichever copy
+      // wasn't written last always looks dirty, so the two take turns pushing
+      // and the item flip-flops forever. (Seen in the wild: a Syncthing copy
+      // and the original alternating a list between nested and flat every five
+      // minutes.) Skip them: a copy is never the file we sync.
+      if (isFileSyncConflictCopy(file.basename)) continue;
+
       const content = await this.app.vault.cachedRead(file);
       const fm = peekFrontmatter(content);
       const id = typeof fm["bw-id"] === "string" ? fm["bw-id"] : undefined;
       out.push({ file, type, content, hash: hashString(content), id });
     }
-    return out;
+    // Belt and braces: conflict-copy naming is not standardised, so also refuse
+    // to push two files claiming one id whatever they are called. The file the
+    // record already points at wins; the rest are left alone (never pushed,
+    // never deleted) and reported so the user can merge and remove them.
+    return this.dedupeById(out);
+  }
+
+  /** Of several files claiming one `bw-id`, the one we sync: the file the
+   *  record already points at, else the first by path (stable, so the choice
+   *  doesn't change under the user between syncs). The losers are returned as
+   *  warnings, not silently dropped. */
+  private dedupeById(scanned: ScannedFile[]): ScannedFile[] {
+    const byId = new Map<string, ScannedFile[]>();
+    for (const s of scanned) {
+      if (!s.id) continue;
+      const group = byId.get(s.id);
+      if (group) group.push(s);
+      else byId.set(s.id, [s]);
+    }
+
+    const dropped = new Set<ScannedFile>();
+    this.duplicateIdWarnings = [];
+    for (const [id, group] of byId) {
+      if (group.length < 2) continue;
+      const recordPath = this.settings.records[id]?.path;
+      const sorted = [...group].sort((a, b) => a.file.path.localeCompare(b.file.path));
+      const keep = sorted.find((s) => s.file.path === recordPath) ?? sorted[0]!;
+      for (const s of group) if (s !== keep) dropped.add(s);
+      this.duplicateIdWarnings.push(
+        `${group.length} files share the id ${id}. Syncing ${keep.file.path}; ignoring ${group
+          .filter((s) => s !== keep)
+          .map((s) => s.file.path)
+          .join(", ")}. Merge what you want to keep into the one being synced, then delete the others.`
+      );
+    }
+    return dropped.size === 0 ? scanned : scanned.filter((s) => !dropped.has(s));
   }
 
   // -- DTO builders (for re-serializing local edits with assigned id) ------
@@ -352,6 +402,7 @@ export class SyncEngine {
 
   private async pushLocal(api: JokeBakeryApi, summary: SyncSummary): Promise<void> {
     const scanned = await this.scanLocalFiles();
+    summary.errors.push(...this.duplicateIdWarnings);
     const dirty = new Map<string, ScannedFile>();
     const sprints: SprintPush[] = [];
     const jokes: JokePush[] = [];

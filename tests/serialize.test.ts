@@ -13,6 +13,7 @@ import { describe, expect, it } from "vitest";
 import {
   crashToMarkdown,
   ideasToMarkdown,
+  isFileSyncConflictCopy,
   jokeToMarkdown,
   listToMarkdown,
   parseCrashFile,
@@ -406,5 +407,33 @@ describe("ideas round trip", () => {
       { id: "id1", text: "idea one" },
       { id: "id2", text: "idea two" },
     ]);
+  });
+});
+
+describe("file-sync conflict copies", () => {
+  it("spots the copies a file-sync tool leaves beside a note", () => {
+    // Syncthing, as seen in the wild flip-flopping a real list.
+    expect(
+      isFileSyncConflictCopy(
+        "things-my-mum-can-do-from-her-chair.sync-conflict-20260721-100720-2QQTU7R"
+      )
+    ).toBe(true);
+    expect(
+      isFileSyncConflictCopy("My list (jim's conflicted copy 2026-07-21)")
+    ).toBe(true);
+    expect(isFileSyncConflictCopy("My list (conflict 2026-07-21 10-07-20)")).toBe(
+      true
+    );
+  });
+
+  it("leaves notes a human would plausibly name alone", () => {
+    expect(isFileSyncConflictCopy("things-my-mum-can-do-from-her-chair")).toBe(
+      false
+    );
+    // iCloud's `Note 2` shape is deliberately not matched - too close to real
+    // names, and ignoring a genuine note is worse than syncing a stray copy.
+    expect(isFileSyncConflictCopy("Set 2")).toBe(false);
+    expect(isFileSyncConflictCopy("Jokes about conflict")).toBe(false);
+    expect(isFileSyncConflictCopy("Conflict (the play)")).toBe(false);
   });
 });

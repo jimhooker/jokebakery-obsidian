@@ -1,6 +1,6 @@
 {
   "name": "jokebakery-sync",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "description": "Two-way sync of your JokeBakery jokes, sprints, lists and crashes with your vault as Markdown. Requires a JokeBakery account.",
   "main": "main.js",
   "scripts": {

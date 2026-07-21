@@ -50,6 +50,32 @@ function newItemId(): string {
   return Math.random().toString(36).slice(2, 14);
 }
 
+/**
+ * Does this file name look like a COPY a file-sync tool made of a note, rather
+ * than a note the user keeps?
+ *
+ * Syncthing, Dropbox and the like leave a duplicate beside the original when
+ * two devices edited it. The duplicate carries the same `bw-id` frontmatter, so
+ * to the sync engine it reads as a second file for one entity, and the pair
+ * take turns pushing over each other (see scanLocalFiles). A copy is never the
+ * file we sync, so it is skipped entirely - never pushed, never deleted, left
+ * for the user to merge and remove by hand.
+ *
+ * Deliberately NOT matched: iCloud's `Note 2.md`. That pattern is far too close
+ * to names people genuinely use ("Set 2"), and ignoring a real note is worse
+ * than syncing a stray copy - the id-level guard catches those anyway.
+ */
+export function isFileSyncConflictCopy(basename: string): boolean {
+  return (
+    // Syncthing: `Note.sync-conflict-20260721-100720-2QQTU7R`
+    /\.sync-conflict-\d{8}-\d{6}-\w+$/i.test(basename) ||
+    // Dropbox: `Note (jim's conflicted copy 2026-07-21)`
+    /\([^()]*conflicted copy[^()]*\)$/i.test(basename) ||
+    // Obsidian Sync, and the copies this plugin writes itself
+    /\(conflict\b[^()]*\)$/i.test(basename)
+  );
+}
+
 export const SPRINTS_SUBDIR = "Sprints";
 export const JOKES_SUBDIR = "Jokes";
 export const LISTS_SUBDIR = "Lists";
