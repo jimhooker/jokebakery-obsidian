@@ -63,7 +63,7 @@ export class JokeBakerySettingTab extends PluginSettingTab {
     new Setting(containerEl)
       .setName("Vault folder")
       .setDesc(
-        "Where synced files live. Sprints go in <folder>/Sprints, jokes in <folder>/Jokes, lists in <folder>/Lists."
+        "Where synced files live. Sprints go in <folder>/Sprints, jokes in <folder>/Jokes, lists in <folder>/Lists, gigs in <folder>/Gigs."
       )
       .addText((t) =>
         t
@@ -130,6 +130,8 @@ export class JokeBakerySettingTab extends PluginSettingTab {
       "Tip: create a new sprint by adding a note in <folder>/Sprints named " +
         "after its date (e.g. 2026-06-10.md); create a joke by adding a note " +
         "in <folder>/Jokes; create a list by adding a note in <folder>/Lists. " +
+        "Gigs are different: they are created in JokeBakery when you log a set, " +
+        "and the note is where you write up how it went. " +
         "Deleting a synced file removes it in JokeBakery too."
     );
   }

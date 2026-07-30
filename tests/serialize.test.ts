@@ -16,7 +16,9 @@ import {
   isFileSyncConflictCopy,
   jokeToMarkdown,
   listToMarkdown,
+  gigToMarkdown,
   parseCrashFile,
+  parseGigFile,
   parseIdeasFile,
   parseJokeFile,
   parseListFile,
@@ -25,7 +27,14 @@ import {
   sprintToMarkdown,
   stripSyncIdentity,
 } from "../src/serialize";
-import type { CrashDTO, IdeasDocDTO, JokeDTO, ListDTO, SprintDTO } from "../src/types";
+import type {
+  CrashDTO,
+  GigDTO,
+  IdeasDocDTO,
+  JokeDTO,
+  ListDTO,
+  SprintDTO,
+} from "../src/types";
 
 function jokeDTO(overrides: Partial<JokeDTO> = {}): JokeDTO {
   return {
@@ -33,6 +42,7 @@ function jokeDTO(overrides: Partial<JokeDTO> = {}): JokeDTO {
     id: "jk_123",
     title: "Airline food",
     premise: "Airports are tiny failed cities",
+    hinge: "failed",
     keyWords: ["airports", "cities"],
     setup: "First line of setup\nSecond line of setup",
     development: "A development line",
@@ -48,6 +58,7 @@ function jokeDTO(overrides: Partial<JokeDTO> = {}): JokeDTO {
     theme: "alienation",
     angle: "everything is fake",
     stage: 3,
+    status: null,
     notes: "some notes",
     performanceNotes: "slow down",
     setupChecklistDone: ["chk1"],
@@ -57,6 +68,9 @@ function jokeDTO(overrides: Partial<JokeDTO> = {}): JokeDTO {
     setupIEN: ["I", "N"],
     developmentIEN: [null],
     punchlineIEN: ["E"],
+    setupBreaths: [2],
+    developmentBreaths: [],
+    punchlineBreaths: [],
     additionalPunchlines: [
       { id: "ap1", text: "Alt punch", components: [], rhythm: { keys: [], colours: [] } },
     ],
@@ -407,6 +421,175 @@ describe("ideas round trip", () => {
       { id: "id1", text: "idea one" },
       { id: "id2", text: "idea two" },
     ]);
+  });
+});
+
+describe("the Other voice", () => {
+  it("round-trips O and names it in the Voices section", () => {
+    const dto = jokeDTO({
+      setup: "One line\nTwo line",
+      setupIEN: ["O", "I"],
+    });
+    const md = jokeToMarkdown(dto);
+
+    // The bug this guards: a build that only knew I/E/N rendered `**undefined**`
+    // here and pushed the O tag back as null, wiping it server-side.
+    expect(md).toContain("**OTHER** — One line");
+    expect(parseJokeFile(md).setupIEN).toEqual(["O", "I"]);
+  });
+
+  it("still discards a voice that isn't a voice", () => {
+    const md = jokeToMarkdown(jokeDTO()).replace(
+      /"setupIEN":\[[^\]]*\]/,
+      '"setupIEN":["I","X"]'
+    );
+    expect(parseJokeFile(md).setupIEN).toEqual(["I", null]);
+  });
+});
+
+describe("joke status", () => {
+  it("round-trips a real status", () => {
+    const md = jokeToMarkdown(jokeDTO({ status: "hit" }));
+    expect(md).toMatch(/^status: hit$/m);
+    expect(parseJokeFile(md).status).toBe("hit");
+  });
+
+  it("omits the key when no status is set", () => {
+    expect(jokeToMarkdown(jokeDTO({ status: null }))).not.toMatch(/^status:/m);
+  });
+
+  it("drops a status the server's enum would reject", () => {
+    // One bad enum value 400s the WHOLE push, so a typo must not be sent.
+    const md = jokeToMarkdown(jokeDTO({ status: "hit" })).replace(
+      "status: hit",
+      "status: hilarious"
+    );
+    expect(parseJokeFile(md).status).toBeUndefined();
+  });
+
+  it("treats an explicitly empty status as 'clear it'", () => {
+    const md = jokeToMarkdown(jokeDTO({ status: "hit" })).replace(
+      "status: hit",
+      "status: ''"
+    );
+    expect(parseJokeFile(md).status).toBeNull();
+  });
+});
+
+describe("breaths", () => {
+  it("round-trips through bw-meta", () => {
+    const md = jokeToMarkdown(jokeDTO({ setupBreaths: [1, 4], punchlineBreaths: [2] }));
+    const parsed = parseJokeFile(md);
+    expect(parsed.setupBreaths).toEqual([1, 4]);
+    expect(parsed.punchlineBreaths).toEqual([2]);
+  });
+});
+
+describe("gig round trip", () => {
+  const dto: GigDTO = {
+    id: "gig1",
+    setId: "set1",
+    setTitle: "Twenty at the Cellar",
+    date: "2026-07-14",
+    venue: "The Comedy Cellar",
+    vibe: "Rowdy",
+    billPosition: "opener",
+    followed: "A juggler",
+    crowd: "80, mostly couples",
+    plannedMinutes: 20,
+    actualMinutes: 22,
+    firstApplauseSeconds: 150,
+    recordingUrl: "https://example.com/set.mp3",
+    recordingReviewed: true,
+    wentWell: "The opener landed.",
+    wentBadly: "Lost them in the middle.",
+    notes: "Bring the shorter mic stand.",
+    nextTime: [{ id: "n1", text: "Cut the airport bit", ideaId: null }],
+    routineNotes: { r1: "Never gets going before the callback." },
+    lineup: [
+      {
+        id: "lin1",
+        jokeId: "joke1",
+        routineId: "r1",
+        routineTitle: "Airport bit",
+        position: 1,
+        performed: "performed",
+        isNew: true,
+        laughs: ["rolling", "recognition"],
+        rating: 4,
+        note: "Solid.",
+      },
+    ],
+    createdAt: "2026-07-14T22:00:00Z",
+    updatedAt: "2026-07-15T09:00:00Z",
+  };
+
+  it("preserves every editable field", () => {
+    const md = gigToMarkdown(dto, (id) => `[[${id}]]`);
+    const { push, warnings } = parseGigFile(md);
+
+    expect(warnings).toEqual([]);
+    expect(push).toMatchObject({
+      id: "gig1",
+      venue: "The Comedy Cellar",
+      vibe: "Rowdy",
+      billPosition: "opener",
+      followed: "A juggler",
+      crowd: "80, mostly couples",
+      actualMinutes: 22,
+      firstApplauseSeconds: 150,
+      recordingUrl: "https://example.com/set.mp3",
+      recordingReviewed: true,
+      wentWell: "The opener landed.",
+      wentBadly: "Lost them in the middle.",
+      notes: "Bring the shorter mic stand.",
+      routineNotes: { r1: "Never gets going before the callback." },
+    });
+    expect(push?.lineup).toEqual([
+      { id: "lin1", rating: 4, laughs: ["rolling", "recognition"], isNew: true, note: "Solid." },
+    ]);
+  });
+
+  it("never sends the fields a gig owns rather than the vault", () => {
+    const { push } = parseGigFile(gigToMarkdown(dto, (id) => id));
+    for (const readOnly of ["date", "setId", "setTitle", "plannedMinutes", "nextTime", "lineupOrder"]) {
+      expect(push).not.toHaveProperty(readOnly);
+    }
+  });
+
+  it("reads laugh types by label or by slug", () => {
+    const md = gigToMarkdown(dto, (id) => id).replace(
+      "laughs: Rolling, Recognition",
+      "laughs: groan, Applause break"
+    );
+    expect(parseGigFile(md).push?.lineup?.[0]?.laughs).toEqual([
+      "groan",
+      "applausebreak",
+    ]);
+  });
+
+  it("refuses a recording URL that isn't http(s)", () => {
+    const md = gigToMarkdown(dto, (id) => id).replace(
+      /^recording-url: .*$/m,
+      "recording-url: 'javascript:alert(1)'"
+    );
+    const { push, warnings } = parseGigFile(md);
+    expect(push).not.toHaveProperty("recordingUrl");
+    expect(warnings.join(" ")).toContain("http://");
+  });
+
+  it("won't send an emptied venue, which the server requires", () => {
+    const md = gigToMarkdown(dto, (id) => id).replace(
+      "venue: The Comedy Cellar",
+      "venue: ''"
+    );
+    const { push, warnings } = parseGigFile(md);
+    expect(push?.venue).toBeUndefined();
+    expect(warnings.join(" ")).toContain("Venue");
+  });
+
+  it("has nothing to push for a note that was never a gig", () => {
+    expect(parseGigFile("# Last night\n\nWent fine.\n").push).toBeUndefined();
   });
 });
 

@@ -1,13 +1,14 @@
 {
   "compilerOptions": {
-    "baseUrl": ".",
     "inlineSourceMap": true,
     "inlineSources": true,
     "module": "ESNext",
     "target": "ES2018",
     "allowJs": true,
     "noImplicitAny": true,
-    "moduleResolution": "node",
+    // "bundler", not the old "node": esbuild does the resolving, and TypeScript
+    // 7 removed the node10 mode anyway. tsc here only ever typechecks.
+    "moduleResolution": "bundler",
     "importHelpers": true,
     "isolatedModules": true,
     "strict": true,
@@ -16,5 +17,5 @@
     "skipLibCheck": true,
     "lib": ["DOM", "ES2018", "ES2020"]
   },
-  "include": ["src/**/*.ts"]
+  "include": ["src/**/*.ts", "tests/**/*.ts"]
 }

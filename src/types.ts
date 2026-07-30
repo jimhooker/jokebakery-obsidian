@@ -14,7 +14,10 @@ export interface Rhythm {
   colours: number[];
 }
 
-export type IENValue = "I" | "E" | "N" | null;
+/** The IEN voices. "O" (Other) is the fourth voice, added after the first
+ *  release of this plugin - a build that only knew I/E/N mapped it to null on
+ *  parse and pushed that back, silently wiping the tag server-side. */
+export type IENValue = "I" | "E" | "N" | "O" | null;
 
 /** A list item with a stable id, encoded in markdown as `- text ^id` (an
  *  Obsidian block reference). Mirrors the server's ListItem. `afterthoughts`
@@ -87,6 +90,7 @@ export interface AdditionalPunchlineDTO {
   components: string[];
   rhythm: Rhythm;
   ien?: IENValue[];
+  breaths?: number[];
 }
 
 export interface JokeDTO {
@@ -110,6 +114,8 @@ export interface JokeDTO {
   theme: string;
   angle: string;
   stage: number;
+  /** Manual working status, or null for none. One of JOKE_STATUSES. */
+  status: string | null;
   notes: string;
   performanceNotes: string;
   setupChecklistDone: string[];
@@ -119,6 +125,9 @@ export interface JokeDTO {
   setupIEN: IENValue[];
   developmentIEN: IENValue[];
   punchlineIEN: IENValue[];
+  setupBreaths: number[];
+  developmentBreaths: number[];
+  punchlineBreaths: number[];
   additionalPunchlines: AdditionalPunchlineDTO[];
   lists: JokeListDTO[];
   setupVersions: SetupVersionDTO[];
@@ -139,12 +148,88 @@ export interface IdeasDocDTO {
   updatedAt: string;
 }
 
+/**
+ * A gig - one performance of a set, as it actually went. The lineup is
+ * embedded (like a joke embeds its setup versions).
+ *
+ * NOTE: unlike every other DTO this one carries NO `type` discriminant - the
+ * server's GigDTO has no such field. Anywhere a gig flows through code that
+ * switches on `dto.type`, the type has to come from the surrounding context
+ * (the collection it arrived in, or PushResult.type) instead.
+ */
+export interface GigLineupItemDTO {
+  id: string;
+  jokeId: string;
+  routineId: string | null;
+  routineTitle: string;
+  position: number;
+  /** performed | dropped | added. Set in the app; read-only here. */
+  performed: string;
+  isNew: boolean;
+  /** Laugh-type slugs - see LAUGH_LABELS. */
+  laughs: string[];
+  rating: number | null;
+  note: string;
+}
+
+export interface GigDTO {
+  id: string;
+  setId: string;
+  setTitle: string;
+  date: string;
+  venue: string;
+  vibe: string;
+  billPosition: string;
+  followed: string;
+  crowd: string;
+  plannedMinutes: number | null;
+  actualMinutes: number | null;
+  firstApplauseSeconds: number | null;
+  recordingUrl: string | null;
+  recordingReviewed: boolean;
+  wentWell: string;
+  wentBadly: string;
+  notes: string;
+  nextTime: Array<{ id: string; text: string; ideaId: string | null }>;
+  routineNotes: Record<string, string>;
+  lineup: GigLineupItemDTO[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** Every entity the server can tombstone. The plugin only holds files for the
+ *  ones it syncs; ids it doesn't know simply no-op, which is what makes it safe
+ *  to accept the wider set from a newer server. */
+export type EntityType =
+  | "sprint"
+  | "joke"
+  | "list"
+  | "crash"
+  | "ideas"
+  | "gig"
+  | "routine"
+  | "set"
+  | "tag"
+  | "teardown";
+
+/** The subset this plugin actually keeps files for. */
+export type SyncedEntityType =
+  | "sprint"
+  | "joke"
+  | "list"
+  | "crash"
+  | "ideas"
+  | "gig";
+
 export interface Deletion {
-  type: "sprint" | "joke" | "list" | "crash" | "ideas";
+  type: EntityType;
   id: string;
 }
 
 export interface ChangesResult {
+  /** SYNC_PROTOCOL_VERSION the SERVER speaks. Absent on older builds. Used to
+   *  warn when the server has moved past what this plugin can express. */
+  version?: number;
   now: string;
   sprints: SprintDTO[];
   jokes: JokeDTO[];
@@ -152,6 +237,7 @@ export interface ChangesResult {
   crashes: CrashDTO[];
   deletions: Deletion[];
   ideas?: IdeasDocDTO | null;
+  gigs?: GigDTO[];
 }
 
 // --- Push (plugin -> server) ---
@@ -212,6 +298,7 @@ export interface JokePush {
   theme?: string;
   angle?: string;
   stage?: number;
+  status?: string | null;
   notes?: string;
   performanceNotes?: string;
   setupChecklistDone?: string[];
@@ -221,8 +308,60 @@ export interface JokePush {
   setupIEN?: IENValue[];
   developmentIEN?: IENValue[];
   punchlineIEN?: IENValue[];
+  setupBreaths?: number[];
+  developmentBreaths?: number[];
+  punchlineBreaths?: number[];
   additionalPunchlines?: AdditionalPunchlineDTO[];
   lists?: JokeListPush[];
+}
+
+/**
+ * The joke statuses the server's push schema accepts. The server validates
+ * this as a zod enum, and ONE bad value 400s the entire push (every joke,
+ * list and sprint in it), so a hand-typed status is checked against this list
+ * client-side and dropped rather than sent.
+ */
+export const JOKE_STATUSES = [
+  "tested",
+  "working",
+  "hit",
+  "needsrewrite",
+  "retired",
+] as const;
+
+/**
+ * A gig push. Only outcome + retro fields are editable: a gig is born in the
+ * app when a set's lineup is snapshotted, so there is no create path here and
+ * `id` is required (not optional like every other push).
+ *
+ * There is also no `ref`: the server echoes the gig id back as the result's
+ * `ref`, so the sync engine resolves gig results by id, not by file path.
+ */
+export interface GigLineupPush {
+  id: string;
+  laughs?: string[];
+  rating?: number | null;
+  note?: string;
+  isNew?: boolean;
+}
+
+export interface GigPush {
+  id: string;
+  baseUpdatedAt?: string;
+  venue?: string;
+  vibe?: string;
+  billPosition?: string;
+  followed?: string;
+  crowd?: string;
+  actualMinutes?: number | null;
+  firstApplauseSeconds?: number | null;
+  recordingUrl?: string | null;
+  recordingReviewed?: boolean;
+  wentWell?: string;
+  wentBadly?: string;
+  notes?: string;
+  routineNotes?: Record<string, string>;
+  lineup?: GigLineupPush[];
 }
 
 export interface IdeasPush {
@@ -244,6 +383,7 @@ export interface PushBody {
   lists?: ListPush[];
   crashes?: CrashPush[];
   ideas?: IdeasPush[];
+  gigs?: GigPush[];
   deletes?: Deletion[];
   protocolVersion?: number;
 }
@@ -256,12 +396,14 @@ export type PushStatus =
   | "error";
 
 export interface PushResult {
+  /** The file path we sent as `ref` - EXCEPT for gigs, where the server has no
+   *  ref to echo and returns the gig id instead. */
   ref: string;
-  type: "sprint" | "joke" | "list" | "crash" | "ideas";
+  type: EntityType;
   status: PushStatus;
   id?: string;
   updatedAt?: string;
-  server?: SprintDTO | JokeDTO | ListDTO | CrashDTO | IdeasDocDTO;
+  server?: SprintDTO | JokeDTO | ListDTO | CrashDTO | IdeasDocDTO | GigDTO;
   message?: string;
 }
 
@@ -274,7 +416,7 @@ export interface PushResponse {
 
 export interface SyncRecord {
   id: string;
-  type: "sprint" | "joke" | "list" | "crash" | "ideas";
+  type: SyncedEntityType;
   /** Vault-relative path of the file representing this item. */
   path: string;
   /** Server updatedAt we last reconciled with - our conflict-detection base. */
@@ -297,6 +439,9 @@ export interface JokeBakerySyncSettings {
   records: Record<string, SyncRecord>;
   /** Items deleted in the vault, awaiting a push to delete them server-side. */
   pendingDeletes: Deletion[];
+  /** Highest server protocol version we've already warned about, so the
+   *  "plugin is out of date" notice appears once per bump, not every sync. */
+  protocolNoticeShownFor: number;
 }
 
 /** The pre-rebrand default server URL — migrated to the new domain on load. */
@@ -312,4 +457,5 @@ export const DEFAULT_SETTINGS: JokeBakerySyncSettings = {
   lastSyncAt: "",
   records: {},
   pendingDeletes: [],
+  protocolNoticeShownFor: 0,
 };

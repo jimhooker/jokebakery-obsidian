@@ -20,18 +20,23 @@ import { JokeBakeryApi } from "./api";
 import {
   CONFLICTS_SUBDIR,
   CRASHES_SUBDIR,
+  GIGS_SUBDIR,
   IDEAS_FILENAME,
   JOKES_SUBDIR,
   LISTS_SUBDIR,
   SPRINTS_SUBDIR,
   crashToMarkdown,
   dateFromFilename,
+  gigToMarkdown,
   hashString,
   ideasToMarkdown,
   isFileSyncConflictCopy,
+  jokeMetaLost,
   jokeToMarkdown,
   listToMarkdown,
+  newId,
   parseCrashFile,
+  parseGigFile,
   parseIdeasFile,
   parseJokeFile,
   parseListFile,
@@ -40,6 +45,8 @@ import {
   slugify,
   sprintToMarkdown,
   stripSyncIdentity,
+  type JokeLinker,
+  type JokeNote,
   type ParsedCrash,
   type ParsedIdeas,
   type ParsedJoke,
@@ -49,9 +56,14 @@ import {
 import {
   CLIENT_PROTOCOL_VERSION,
   IDEAS_DOC_ID,
+  type ChangesResult,
   type JokeBakerySyncSettings,
+  type PushBody,
+  type PushResponse,
   type CrashDTO,
   type CrashPush,
+  type GigDTO,
+  type GigPush,
   type IdeasDocDTO,
   type IdeasPush,
   type JokeDTO,
@@ -60,7 +72,17 @@ import {
   type ListPush,
   type SprintDTO,
   type SprintPush,
+  type SyncedEntityType,
 } from "./types";
+
+/** Any entity the plugin keeps a file for. */
+type SyncedDTO =
+  | SprintDTO
+  | JokeDTO
+  | ListDTO
+  | CrashDTO
+  | IdeasDocDTO
+  | GigDTO;
 
 const EMPTY_RHYTHM = { keys: [], colours: [] };
 
@@ -69,6 +91,10 @@ const EMPTY_RHYTHM = { keys: [], colours: [] };
  *  sideways) queues one per file, and pushing them would soft-delete the
  *  user's whole library server-side in one sync. */
 export const MASS_DELETE_LIMIT = 20;
+
+/** A base timestamp old enough that any server copy counts as newer - used to
+ *  mark a note for repair on the next pull. */
+const EPOCH = "1970-01-01T00:00:00.000Z";
 
 export interface SyncSummary {
   pushedCreated: number;
@@ -94,10 +120,17 @@ function emptySummary(): SyncSummary {
 
 interface ScannedFile {
   file: TFile;
-  type: "sprint" | "joke" | "list" | "crash" | "ideas";
+  type: SyncedEntityType;
   content: string;
   hash: string;
   id?: string;
+}
+
+/** The slice of the API the engine uses. Named so tests can drive the engine
+ *  against a fake server without going near HTTP. */
+export interface SyncApi {
+  changes(since: string): Promise<ChangesResult>;
+  push(body: PushBody): Promise<PushResponse>;
 }
 
 export class SyncEngine {
@@ -107,7 +140,9 @@ export class SyncEngine {
     private persist: () => Promise<void>,
     /** Asked before pushing >= MASS_DELETE_LIMIT deletions; false holds them. */
     private confirmMassDelete: (count: number) => Promise<boolean> = () =>
-      Promise.resolve(false)
+      Promise.resolve(false),
+    private createApi: (settings: JokeBakerySyncSettings) => SyncApi = (s) =>
+      new JokeBakeryApi(s.serverUrl, s.token)
   ) {}
 
   /** Filled by the scan when several vault files claim one `bw-id`; drained
@@ -184,17 +219,70 @@ export class SyncEngine {
     return true;
   }
 
-  private defaultPath(
-    dto: SprintDTO | JokeDTO | ListDTO | CrashDTO | IdeasDocDTO
-  ): string {
-    if (dto.type === "sprint") return `${this.sub(SPRINTS_SUBDIR)}/${dto.date}.md`;
-    if (dto.type === "list")
-      return `${this.sub(LISTS_SUBDIR)}/${slugify(dto.label)}.md`;
-    if (dto.type === "crash")
-      return `${this.sub(CRASHES_SUBDIR)}/${slugify(`${dto.aText}-x-${dto.bText}`)}.md`;
-    if (dto.type === "ideas") return this.sub(IDEAS_FILENAME);
-    return `${this.sub(JOKES_SUBDIR)}/${slugify(dto.title)}.md`;
+  /**
+   * Where a freshly pulled item goes.
+   *
+   * The type is passed in rather than read off the DTO: a GigDTO carries no
+   * `type` discriminant (the server's doesn't have one either), so `dto.type`
+   * isn't available for gigs and the caller has to say what it pulled.
+   */
+  private defaultPath(type: SyncedEntityType, dto: SyncedDTO): string {
+    switch (type) {
+      case "sprint":
+        return `${this.sub(SPRINTS_SUBDIR)}/${(dto as SprintDTO).date}.md`;
+      case "list":
+        return `${this.sub(LISTS_SUBDIR)}/${slugify((dto as ListDTO).label)}.md`;
+      case "crash": {
+        const c = dto as CrashDTO;
+        return `${this.sub(CRASHES_SUBDIR)}/${slugify(`${c.aText}-x-${c.bText}`)}.md`;
+      }
+      case "gig": {
+        const g = dto as GigDTO;
+        return `${this.sub(GIGS_SUBDIR)}/${g.date}-${slugify(g.venue || "gig")}.md`;
+      }
+      case "ideas":
+        return this.sub(IDEAS_FILENAME);
+      default:
+        return `${this.sub(JOKES_SUBDIR)}/${slugify((dto as JokeDTO).title)}.md`;
+    }
   }
+
+  /**
+   * Render a synced entity to its note. Same reason as defaultPath for taking
+   * the type explicitly: gigs have no discriminant to switch on.
+   */
+  private render(type: SyncedEntityType, dto: SyncedDTO): string {
+    switch (type) {
+      case "sprint":
+        return sprintToMarkdown(dto as SprintDTO);
+      case "list":
+        return listToMarkdown(dto as ListDTO);
+      case "crash":
+        return crashToMarkdown(dto as CrashDTO);
+      case "ideas":
+        return ideasToMarkdown(dto as IdeasDocDTO);
+      case "gig":
+        return gigToMarkdown(dto as GigDTO, this.jokeLink);
+      default:
+        return jokeToMarkdown(dto as JokeDTO);
+    }
+  }
+
+  /**
+   * Display text for a joke in a gig's lineup. A gig only carries joke IDs, so
+   * this turns them into wikilinks when that joke is synced into this vault -
+   * which is what makes a gig note a way INTO the material rather than a wall
+   * of ids. Only the trailing `^lineupId` is read back on parse, so an
+   * unresolvable link is cosmetic, never lossy.
+   */
+  private jokeLink: JokeLinker = (jokeId) => {
+    const record = this.settings.records[jokeId];
+    if (record && record.type === "joke") {
+      const base = record.path.split("/").pop()?.replace(/\.md$/, "");
+      if (base) return `[[${base}]]`;
+    }
+    return `joke \`${jokeId}\``;
+  };
 
   private conflictCopyPath(originalPath: string): string {
     const base = originalPath.split("/").pop() ?? "item.md";
@@ -210,6 +298,7 @@ export class SyncEngine {
     const jokesDir = this.sub(JOKES_SUBDIR) + "/";
     const listsDir = this.sub(LISTS_SUBDIR) + "/";
     const crashesDir = this.sub(CRASHES_SUBDIR) + "/";
+    const gigsDir = this.sub(GIGS_SUBDIR) + "/";
     const out: ScannedFile[] = [];
 
     // The ideas inbox is a virtual doc keyed by a fixed id, not a folder scan:
@@ -221,12 +310,13 @@ export class SyncEngine {
     const ideasRecordPath = this.settings.records[IDEAS_DOC_ID]?.path;
 
     for (const file of this.app.vault.getMarkdownFiles()) {
-      let type: "sprint" | "joke" | "list" | "crash" | "ideas" | null = null;
+      let type: SyncedEntityType | null = null;
       if (file.path === ideasPath || file.path === ideasRecordPath) type = "ideas";
       else if (file.path.startsWith(sprintsDir)) type = "sprint";
       else if (file.path.startsWith(jokesDir)) type = "joke";
       else if (file.path.startsWith(listsDir)) type = "list";
       else if (file.path.startsWith(crashesDir)) type = "crash";
+      else if (file.path.startsWith(gigsDir)) type = "gig";
       if (!type) continue;
 
       // A file-sync tool (Syncthing, Dropbox, iCloud) drops a COPY of a note
@@ -301,19 +391,36 @@ export class SyncEngine {
     };
   }
 
-  private jokeDTO(
+  /**
+   * Rebuild the joke note after a successful push, so the file carries its
+   * canonical id.
+   *
+   * `created` decides what happens to fields the note didn't carry. On a
+   * CREATE the parse is the whole truth (nothing existed server-side before),
+   * so absent means empty and it's safe to write defaults in. On an UPDATE it
+   * is not: the note simply predates the field, the server still holds a real
+   * value, and writing a fabricated `''` here would make the NEXT push send it
+   * as "clear this" and destroy that value. So the key is left out instead,
+   * and a later pull fills it in. This is the second half of the fix in
+   * parseJokeFile - presence-checking the parse alone doesn't help if the
+   * re-write puts the fabricated blank straight back.
+   */
+  private jokeNote(
     p: ParsedJoke,
     id: string,
     createdAt: string,
-    updatedAt: string
-  ): JokeDTO {
+    updatedAt: string,
+    created: boolean
+  ): JokeNote {
+    const def = <T>(v: T | undefined, fallback: T): T | undefined =>
+      v !== undefined ? v : created ? fallback : undefined;
     return {
       type: "joke",
       id,
       title: p.title ?? deriveTitle(p.setup ?? ""),
-      premise: p.premise ?? "",
-      hinge: p.hinge ?? "",
-      keyWords: p.keyWords ?? [],
+      premise: def(p.premise, ""),
+      hinge: def(p.hinge, ""),
+      keyWords: def(p.keyWords, []),
       setup: p.setup ?? "",
       development: p.development ?? "",
       punchline: p.punchline ?? "",
@@ -321,13 +428,14 @@ export class SyncEngine {
       setupComponents: p.setupComponents ?? [],
       developmentComponents: p.developmentComponents ?? [],
       punchlineComponents: p.punchlineComponents ?? [],
-      families: p.families ?? [],
-      jokeType: p.jokeType ?? "",
-      jokeFunction: p.jokeFunction ?? "",
-      topicTags: p.topicTags ?? [],
-      theme: p.theme ?? "",
-      angle: p.angle ?? "",
-      stage: p.stage ?? 1,
+      families: def(p.families, []),
+      jokeType: def(p.jokeType, ""),
+      jokeFunction: def(p.jokeFunction, ""),
+      topicTags: def(p.topicTags, []),
+      theme: def(p.theme, ""),
+      angle: def(p.angle, ""),
+      stage: def(p.stage, 1),
+      status: p.status !== undefined ? p.status : created ? null : undefined,
       notes: p.notes ?? "",
       performanceNotes: p.performanceNotes ?? "",
       setupChecklistDone: p.setupChecklistDone ?? [],
@@ -337,6 +445,9 @@ export class SyncEngine {
       setupIEN: p.setupIEN ?? [],
       developmentIEN: p.developmentIEN ?? [],
       punchlineIEN: p.punchlineIEN ?? [],
+      setupBreaths: p.setupBreaths ?? [],
+      developmentBreaths: p.developmentBreaths ?? [],
+      punchlineBreaths: p.punchlineBreaths ?? [],
       additionalPunchlines: p.additionalPunchlines ?? [],
       lists: (p.lists ?? []).map((l) => ({
         id: "",
@@ -400,31 +511,60 @@ export class SyncEngine {
 
   // -- push ----------------------------------------------------------------
 
-  private async pushLocal(api: JokeBakeryApi, summary: SyncSummary): Promise<void> {
+  private async pushLocal(api: SyncApi, summary: SyncSummary): Promise<void> {
     const scanned = await this.scanLocalFiles();
     summary.errors.push(...this.duplicateIdWarnings);
     const dirty = new Map<string, ScannedFile>();
+    // Gigs are looked up by id, not by path: gigPushSchema has no `ref` field
+    // to echo, so the server returns the gig's own id as the result ref.
+    const dirtyById = new Map<string, ScannedFile>();
     const sprints: SprintPush[] = [];
     const jokes: JokePush[] = [];
     const lists: ListPush[] = [];
     const crashes: CrashPush[] = [];
     const ideasArr: IdeasPush[] = [];
+    const gigs: GigPush[] = [];
 
     for (const s of scanned) {
       const record = s.id ? this.settings.records[s.id] : undefined;
       const isDirty = !record || record.hash !== s.hash;
       if (!isDirty) continue;
 
-      dirty.set(s.file.path, s);
       const ref = s.file.path;
       const baseUpdatedAt = record?.baseUpdatedAt;
+
+      if (s.type === "gig") {
+        // A gig is born in the app, at the moment a set's lineup is
+        // snapshotted. A note here with no id was hand-made and has nothing to
+        // update, so there's no create to attempt - say so and move on.
+        const parsed = parseGigFile(s.content);
+        summary.errors.push(...parsed.warnings.map((w) => `${ref}: ${w}`));
+        if (!parsed.push) {
+          summary.errors.push(
+            `${ref}: not a JokeBakery gig (no bw-id). Gigs are created in the app when you log a set.`
+          );
+          continue;
+        }
+        dirty.set(ref, s);
+        dirtyById.set(parsed.push.id, s);
+        gigs.push({ ...parsed.push, baseUpdatedAt });
+        continue;
+      }
+
+      dirty.set(ref, s);
+
+      // A note with no id yet is a create. Mint the id HERE rather than
+      // letting the server assign one: the server treats a create as "no row
+      // exists for this id", so sending our own makes the create idempotent
+      // and a retried push updates that row instead of making a second one.
+      const idFor = (parsedId: string | undefined) => parsedId ?? newId();
 
       if (s.type === "sprint") {
         const fallback = dateFromFilename(s.file.basename) ?? todayLocal();
         const parsed = parseSprintFile(s.content, fallback);
         sprints.push({
           ref,
-          id: parsed.id,
+          id: idFor(parsed.id),
           baseUpdatedAt,
           date: parsed.date,
           durationSec: parsed.durationSec,
@@ -434,7 +574,7 @@ export class SyncEngine {
         const parsed = parseListFile(s.content, s.file.basename);
         lists.push({
           ref,
-          id: parsed.id,
+          id: idFor(parsed.id),
           baseUpdatedAt,
           label: parsed.label,
           items: parsed.items,
@@ -443,7 +583,7 @@ export class SyncEngine {
         const parsed = parseCrashFile(s.content);
         crashes.push({
           ref,
-          id: parsed.id,
+          id: idFor(parsed.id),
           baseUpdatedAt,
           aListId: parsed.aListId,
           aItemId: parsed.aItemId,
@@ -461,7 +601,7 @@ export class SyncEngine {
         });
       } else {
         const parsed = parseJokeFile(s.content);
-        jokes.push({ ref, baseUpdatedAt, ...parsed });
+        jokes.push({ ref, baseUpdatedAt, ...parsed, id: idFor(parsed.id) });
       }
     }
 
@@ -481,6 +621,7 @@ export class SyncEngine {
       lists.length === 0 &&
       crashes.length === 0 &&
       ideasArr.length === 0 &&
+      gigs.length === 0 &&
       deletes.length === 0
     )
       return;
@@ -491,6 +632,7 @@ export class SyncEngine {
       lists,
       crashes,
       ideas: ideasArr,
+      gigs,
       deletes,
       protocolVersion: CLIENT_PROTOCOL_VERSION,
     });
@@ -506,7 +648,9 @@ export class SyncEngine {
         continue;
       }
 
-      const entry = dirty.get(r.ref);
+      // Gig results come back keyed by gig id (no ref to echo); everything
+      // else by the file path we sent.
+      const entry = dirty.get(r.ref) ?? dirtyById.get(r.ref);
       if (!entry) continue;
 
       if (r.status === "error") {
@@ -520,20 +664,12 @@ export class SyncEngine {
         const copyPath = await this.uniquePath(this.conflictCopyPath(entry.file.path));
         await this.writeFile(copyPath, stripSyncIdentity(entry.content));
         if (server) {
-          const content =
-            server.type === "sprint"
-              ? sprintToMarkdown(server)
-              : server.type === "list"
-                ? listToMarkdown(server)
-                : server.type === "crash"
-                  ? crashToMarkdown(server)
-                  : server.type === "ideas"
-                    ? ideasToMarkdown(server)
-                    : jokeToMarkdown(server);
+          // r.type, not server.type: a GigDTO has no `type` field.
+          const content = this.render(entry.type, server);
           await this.writeFile(entry.file.path, content);
           this.settings.records[server.id] = {
             id: server.id,
-            type: server.type,
+            type: entry.type,
             path: entry.file.path,
             baseUpdatedAt: server.updatedAt,
             hash: hashString(content),
@@ -549,6 +685,25 @@ export class SyncEngine {
       if (!r.id || !r.updatedAt) continue;
       const created = peekFrontmatter(entry.content)["bw-created"];
       const createdAt = typeof created === "string" ? created : r.updatedAt;
+
+      // A gig note is a view of server state we only partly hold (the lineup's
+      // running order, the retro actions, the set it came from). Rebuilding it
+      // from our own parse would drop all of that, so leave the file as the
+      // user left it and let the pull that runs next rewrite it from the
+      // server - our push just bumped updatedAt, so it's coming down anyway.
+      if (entry.type === "gig") {
+        this.settings.records[r.id] = {
+          id: r.id,
+          type: "gig",
+          path: entry.file.path,
+          // Deliberately stale, so pullRemote treats the server copy as newer
+          // and rewrites the note with the canonical version.
+          baseUpdatedAt: EPOCH,
+          hash: entry.hash,
+        };
+        summary.pushedUpdated++;
+        continue;
+      }
 
       let content: string;
       if (entry.type === "sprint") {
@@ -573,24 +728,36 @@ export class SyncEngine {
         // it - both match what the server actually stored. Fall back to the
         // local re-serialize only against an older server build that hasn't
         // started returning `server` on ideas pushes yet.
-        if (r.server && r.server.type === "ideas") {
-          content = ideasToMarkdown(r.server);
+        if (r.server && r.type === "ideas") {
+          content = ideasToMarkdown(r.server as IdeasDocDTO);
         } else {
           const parsed = parseIdeasFile(entry.content);
           content = ideasToMarkdown(this.ideasDTO(parsed, r.id, createdAt, r.updatedAt));
         }
       } else {
         const parsed = parseJokeFile(entry.content);
-        content = jokeToMarkdown(this.jokeDTO(parsed, r.id, createdAt, r.updatedAt));
+        content = jokeToMarkdown(
+          this.jokeNote(parsed, r.id, createdAt, r.updatedAt, r.status === "created")
+        );
       }
       await this.writeFile(entry.file.path, content);
+      // A joke whose bw-meta was damaged pushed none of the fields that live
+      // in there, so the server still holds them but our re-write doesn't -
+      // back-date the base so the pull below repairs the note from server
+      // truth instead of leaving the empty defaults to be pushed next time.
+      const repair = entry.type === "joke" && jokeMetaLost(entry.content);
       this.settings.records[r.id] = {
         id: r.id,
         type: entry.type,
         path: entry.file.path,
-        baseUpdatedAt: r.updatedAt,
+        baseUpdatedAt: repair ? EPOCH : r.updatedAt,
         hash: hashString(content),
       };
+      if (repair) {
+        summary.errors.push(
+          `${entry.file.path}: sync data was missing from this note, so its components and rhythm marks were re-fetched from JokeBakery rather than cleared.`
+        );
+      }
       if (r.status === "created") summary.pushedCreated++;
       else summary.pushedUpdated++;
     }
@@ -598,28 +765,28 @@ export class SyncEngine {
 
   // -- pull ----------------------------------------------------------------
 
-  private async pullRemote(api: JokeBakeryApi, summary: SyncSummary): Promise<void> {
+  private async pullRemote(api: SyncApi, summary: SyncSummary): Promise<void> {
     const res = await api.changes(this.settings.lastSyncCursor);
-    const items: Array<SprintDTO | JokeDTO | ListDTO | CrashDTO | IdeasDocDTO> = [
-      ...res.sprints,
-      ...res.jokes,
+
+    this.checkServerVersion(res.version, summary);
+
+    // Each entity is paired with its type rather than read off the DTO: gigs
+    // carry no `type` discriminant, so the collection it arrived in is the
+    // only thing that says what it is.
+    const items: Array<[SyncedEntityType, SyncedDTO]> = [
+      ...res.sprints.map((d): [SyncedEntityType, SyncedDTO] => ["sprint", d]),
+      ...res.jokes.map((d): [SyncedEntityType, SyncedDTO] => ["joke", d]),
       // Guard for an older server build that doesn't send these collections.
-      ...(res.lists ?? []),
-      ...(res.crashes ?? []),
-      ...(res.ideas ? [res.ideas] : []),
+      ...(res.lists ?? []).map((d): [SyncedEntityType, SyncedDTO] => ["list", d]),
+      ...(res.crashes ?? []).map((d): [SyncedEntityType, SyncedDTO] => ["crash", d]),
+      ...(res.gigs ?? []).map((d): [SyncedEntityType, SyncedDTO] => ["gig", d]),
+      ...(res.ideas
+        ? [["ideas", res.ideas] as [SyncedEntityType, SyncedDTO]]
+        : []),
     ];
 
-    for (const dto of items) {
-      const content =
-        dto.type === "sprint"
-          ? sprintToMarkdown(dto)
-          : dto.type === "list"
-            ? listToMarkdown(dto)
-            : dto.type === "crash"
-              ? crashToMarkdown(dto)
-              : dto.type === "ideas"
-                ? ideasToMarkdown(dto)
-                : jokeToMarkdown(dto);
+    for (const [type, dto] of items) {
+      const content = this.render(type, dto);
       const newHash = hashString(content);
       const record = this.settings.records[dto.id];
 
@@ -636,14 +803,14 @@ export class SyncEngine {
         // ideasPath), merge server-side, and come back with a canonical
         // result - at which point the record exists and pulls proceed
         // normally. Every other entity keeps the uniquePath fork behavior.
-        if (dto.type === "ideas" && this.exists(this.defaultPath(dto))) {
+        if (type === "ideas" && this.exists(this.defaultPath(type, dto))) {
           continue;
         }
-        const path = await this.uniquePath(this.defaultPath(dto));
+        const path = await this.uniquePath(this.defaultPath(type, dto));
         await this.writeFile(path, content);
         this.settings.records[dto.id] = {
           id: dto.id,
-          type: dto.type,
+          type,
           path,
           baseUpdatedAt: dto.updatedAt,
           hash: newHash,
@@ -691,6 +858,27 @@ export class SyncEngine {
     this.settings.lastSyncCursor = res.now;
   }
 
+  /**
+   * Warn when the server speaks a newer wire version than this build.
+   *
+   * A version gap is not an error - the plugin keeps syncing everything it
+   * understands - but it does mean some of the user's work can't round-trip,
+   * and that degradation is otherwise completely silent. It has bitten before:
+   * clients that predated list nesting pushed nested lists back flat, which is
+   * exactly why the server now needs `protocolVersion` on every push. Say so
+   * once per version bump rather than every sync.
+   */
+  private checkServerVersion(version: number | undefined, summary: SyncSummary): void {
+    if (typeof version !== "number") return;
+    if (version <= CLIENT_PROTOCOL_VERSION) return;
+    if (version <= this.settings.protocolNoticeShownFor) return;
+    this.settings.protocolNoticeShownFor = version;
+    summary.errors.push(
+      "JokeBakery has features this version of the plugin doesn't know about yet. " +
+        "Update JokeBakery Sync from Obsidian's community plugins to keep everything in step."
+    );
+  }
+
   // -- entry point ---------------------------------------------------------
 
   async syncNow(opts: { silent?: boolean } = {}): Promise<SyncSummary> {
@@ -701,7 +889,7 @@ export class SyncEngine {
       return summary;
     }
 
-    const api = new JokeBakeryApi(this.settings.serverUrl, this.settings.token);
+    const api = this.createApi(this.settings);
     try {
       await this.pushLocal(api, summary);
       await this.pullRemote(api, summary);

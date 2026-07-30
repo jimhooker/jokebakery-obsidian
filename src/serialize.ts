@@ -27,9 +27,13 @@
  * unchanged items always serialize byte-identically.
  */
 import { parseYaml } from "obsidian";
+import { JOKE_STATUSES } from "./types";
 import type {
   AdditionalPunchlineDTO,
   CrashDTO,
+  GigDTO,
+  GigLineupPush,
+  GigPush,
   IdeasDocDTO,
   IENValue,
   JokeDTO,
@@ -41,9 +45,16 @@ import type {
   SprintPush,
 } from "./types";
 
-/** Item ids are assigned client-side for bullets a human typed straight into
- *  Obsidian (no `^id` yet). Mirrors src/lib/id.ts in the app. */
-function newItemId(): string {
+/**
+ * Mint an id client-side. Mirrors src/lib/id.ts in the app.
+ *
+ * Used for two things: bullets a human typed straight into Obsidian (no `^id`
+ * yet), and new NOTES, so a create carries its id up front. The server treats
+ * "create" as "no row exists for this id" rather than "the client sent no
+ * id", so sending one makes a create idempotent - which is what lets a push be
+ * safely retried after a timeout without risking a duplicate.
+ */
+export function newId(): string {
   if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
     return crypto.randomUUID().replace(/-/g, "").slice(0, 12);
   }
@@ -81,15 +92,19 @@ export const JOKES_SUBDIR = "Jokes";
 export const LISTS_SUBDIR = "Lists";
 export const CONFLICTS_SUBDIR = "Conflicts";
 export const CRASHES_SUBDIR = "Crashes";
+export const GIGS_SUBDIR = "Gigs";
 export const IDEAS_FILENAME = "Ideas.md";
 
 const EMPTY_RHYTHM: Rhythm = { keys: [], colours: [] };
 
-/** The IEN voice names, shouted. Mirrors IEN_LABELS in src/lib/ien-meta.ts. */
-const IEN_VOICE: Record<"I" | "E" | "N", string> = {
+/** The IEN voice names, shouted. Mirrors IEN_LABELS in src/lib/ien-meta.ts.
+ *  "O" (Other) is the fourth voice and must be listed here: a missing entry
+ *  renders `**undefined**` in the Voices section. */
+const IEN_VOICE: Record<"I" | "E" | "N" | "O", string> = {
   I: "INTERIOR",
   E: "EXTERIOR",
   N: "NARRATOR",
+  O: "OTHER",
 };
 
 // ---------------------------------------------------------------------------
@@ -211,8 +226,12 @@ function splitContent(content: string): { fm: Record<string, unknown>; body: str
   return { fm, body };
 }
 
-function frontmatter(pairs: Array<[string, string]>): string {
-  return "---\n" + pairs.map(([k, v]) => `${k}: ${v}`).join("\n") + "\n---\n\n";
+/** Emit a frontmatter block. A pair whose value is `undefined` is OMITTED -
+ *  see JokeNote for why "we don't know this value" has to stay distinct from
+ *  "this value is empty". */
+function frontmatter(pairs: Array<[string, string | undefined]>): string {
+  const kept = pairs.filter((p): p is [string, string] => p[1] !== undefined);
+  return "---\n" + kept.map(([k, v]) => `${k}: ${v}`).join("\n") + "\n---\n\n";
 }
 
 // ---------------------------------------------------------------------------
@@ -242,9 +261,53 @@ function asRhythm(v: unknown): Rhythm {
   }
   return { ...EMPTY_RHYTHM };
 }
+/** Coerce a stored IEN array. Anything that isn't a known voice becomes null -
+ *  so this list MUST include every voice the app can set, or syncing a joke
+ *  back from the vault silently strips the ones missing here. */
 function asIEN(v: unknown): IENValue[] {
   if (!Array.isArray(v)) return [];
-  return v.map((x) => (x === "I" || x === "E" || x === "N" ? x : null));
+  return v.map((x) =>
+    x === "I" || x === "E" || x === "N" || x === "O" ? x : null
+  );
+}
+
+function asNumArr(v: unknown): number[] {
+  if (!Array.isArray(v)) return [];
+  return v.filter((x): x is number => typeof x === "number" && isFinite(x));
+}
+
+/**
+ * Read a frontmatter key ONLY if it is actually present.
+ *
+ * This is the whole defence against silent server-side wipes. Every push field
+ * is optional, and the server applies any field that isn't `undefined`. A vault
+ * note written before a field existed simply has no such key, and coercing that
+ * absence to `""`/`[]` would push a real "clear this" instruction and destroy a
+ * value the user set on the web. Absent MUST stay absent.
+ */
+function strIfPresent(fm: Record<string, unknown>, key: string): string | undefined {
+  return key in fm ? asStr(fm[key]) : undefined;
+}
+
+function strArrIfPresent(
+  fm: Record<string, unknown>,
+  key: string
+): string[] | undefined {
+  return key in fm ? asStrArr(fm[key]) : undefined;
+}
+
+/**
+ * Coerce a hand-editable status. The server takes a zod ENUM here and one bad
+ * value 400s the whole push - every joke, list and sprint in the batch - so an
+ * unrecognized status is dropped (leaving the server's value alone) rather
+ * than sent. An explicitly empty value clears it.
+ */
+function asStatus(v: unknown): string | null | undefined {
+  if (v === null || v === "") return null;
+  if (typeof v !== "string") return undefined;
+  const s = v.trim().toLowerCase();
+  if (s === "") return null;
+  return (JOKE_STATUSES as readonly string[]).includes(s) ? s : undefined;
 }
 
 /** IEN tags are parallel to a slot's lines. An Obsidian edit can shrink the
@@ -378,8 +441,36 @@ interface JokeMeta {
   setupIEN?: IENValue[];
   developmentIEN?: IENValue[];
   punchlineIEN?: IENValue[];
+  setupBreaths?: number[];
+  developmentBreaths?: number[];
+  punchlineBreaths?: number[];
   additionalPunchlines?: AdditionalPunchlineDTO[];
 }
+
+/**
+ * Frontmatter keys whose value can be genuinely UNKNOWN when we re-write a
+ * note after pushing it: the file never carried the key, so we didn't parse a
+ * value and must not invent one. Emitting a fabricated `''` here would put a
+ * real empty value in the file, and the NEXT push would then send it as
+ * "clear this" and wipe whatever the user had set on the web. Undefined =
+ * leave the key out. A DTO pulled from the server has all of them.
+ */
+type OptionalNoteKeys =
+  | "title"
+  | "premise"
+  | "hinge"
+  | "keyWords"
+  | "stage"
+  | "families"
+  | "jokeType"
+  | "jokeFunction"
+  | "topicTags"
+  | "theme"
+  | "angle"
+  | "status";
+
+export type JokeNote = Omit<JokeDTO, OptionalNoteKeys> &
+  Partial<Pick<JokeDTO, OptionalNoteKeys>>;
 
 /** One `- **VOICE** — line` bullet per IEN-tagged line of a slot. */
 function voiceLines(text: string, ien: IENValue[] | undefined): string[] {
@@ -394,12 +485,12 @@ function voiceLines(text: string, ien: IENValue[] | undefined): string[] {
 }
 
 /**
- * Read-only `## Voices` section: shouts the Interior / Exterior / Narrator
- * voice of each tagged line. Derived from the IEN markup that round-trips in
- * `bw-meta`, so it's regenerated on every pull and ignored on parse (editing
+ * Read-only `## Voices` section: shouts the Interior / Exterior / Narrator /
+ * Other voice of each tagged line. Derived from the IEN markup that round-trips
+ * in `bw-meta`, so it's regenerated on every pull and ignored on parse (editing
  * voices happens in JokeBakery). Empty when no line carries a voice.
  */
-function voicesSection(dto: JokeDTO): string[] {
+function voicesSection(dto: JokeNote): string[] {
   const slots: Array<[string, string, IENValue[] | undefined]> = [
     ["Setup", dto.setup, dto.setupIEN],
     ["Development", dto.development, dto.developmentIEN],
@@ -414,13 +505,18 @@ function voicesSection(dto: JokeDTO): string[] {
   return [
     "## Voices",
     "",
-    "*Read-only — the Interior / Exterior / Narrator voice of each line. Edit in JokeBakery.*",
+    "*Read-only — the Interior / Exterior / Narrator / Other voice of each line. Edit in JokeBakery.*",
     "",
     ...blocks,
   ];
 }
 
-export function jokeToMarkdown(dto: JokeDTO): string {
+/** Apply an emitter to a value only when it's known; undefined omits the key. */
+function opt<T>(v: T | undefined, emit: (v: T) => string): string | undefined {
+  return v === undefined ? undefined : emit(v);
+}
+
+export function jokeToMarkdown(dto: JokeNote): string {
   const meta: JokeMeta = {
     setupComponents: dto.setupComponents,
     developmentComponents: dto.developmentComponents,
@@ -432,6 +528,9 @@ export function jokeToMarkdown(dto: JokeDTO): string {
     setupIEN: dto.setupIEN,
     developmentIEN: dto.developmentIEN,
     punchlineIEN: dto.punchlineIEN,
+    setupBreaths: dto.setupBreaths,
+    developmentBreaths: dto.developmentBreaths,
+    punchlineBreaths: dto.punchlineBreaths,
     additionalPunchlines: dto.additionalPunchlines,
   };
 
@@ -440,17 +539,21 @@ export function jokeToMarkdown(dto: JokeDTO): string {
     ["bw-id", emitScalar(dto.id)],
     ["bw-created", emitScalar(dto.createdAt)],
     ["bw-updated", emitScalar(dto.updatedAt)],
-    ["title", emitScalar(dto.title)],
-    ["premise", emitScalar(dto.premise)],
-    ["hinge", emitScalar(dto.hinge)],
-    ["key-words", emitArray(dto.keyWords)],
-    ["stage", String(dto.stage)],
-    ["families", emitArray(dto.families)],
-    ["joke-type", emitScalar(dto.jokeType)],
-    ["joke-function", emitScalar(dto.jokeFunction)],
-    ["topic-tags", emitArray(dto.topicTags)],
-    ["theme", emitScalar(dto.theme)],
-    ["angle", emitScalar(dto.angle)],
+    ["title", opt(dto.title, emitScalar)],
+    ["premise", opt(dto.premise, emitScalar)],
+    ["hinge", opt(dto.hinge, emitScalar)],
+    ["key-words", opt(dto.keyWords, emitArray)],
+    ["stage", opt(dto.stage, String)],
+    // Null status = "none set". Omitted rather than emitted as empty, so the
+    // note stays tidy; setting `status: hit` by hand still applies it, and an
+    // explicitly empty `status:` clears it.
+    ["status", dto.status ? emitScalar(dto.status) : undefined],
+    ["families", opt(dto.families, emitArray)],
+    ["joke-type", opt(dto.jokeType, emitScalar)],
+    ["joke-function", opt(dto.jokeFunction, emitScalar)],
+    ["topic-tags", opt(dto.topicTags, emitArray)],
+    ["theme", opt(dto.theme, emitScalar)],
+    ["angle", opt(dto.angle, emitScalar)],
     ["bw-meta", emitJson(meta)],
   ]);
 
@@ -545,14 +648,28 @@ export function parseJokeFile(content: string): ParsedJoke {
   const { fm, body } = splitContent(content);
   const sections = parseBodySections(body);
 
-  let meta: JokeMeta = {};
+  const id = typeof fm["bw-id"] === "string" ? fm["bw-id"] : undefined;
+
+  let meta: JokeMeta | null = null;
   if (typeof fm["bw-meta"] === "string") {
     try {
       meta = JSON.parse(fm["bw-meta"]) as JokeMeta;
     } catch {
-      meta = {};
+      meta = null;
     }
   }
+
+  // `bw-meta` carries everything that has no readable representation in the
+  // note: components, rhythm, IEN, breaths, alternative punchlines. If it is
+  // missing or unreadable on a joke we've ALREADY synced, that is damage (a
+  // mangled property block, a hand-copied file), not an instruction - pushing
+  // the zeroed arrays would wipe every mark the user made in the app. Send
+  // nothing for those fields and let the server keep what it has. A brand new
+  // note has no id, so it still gets proper empty defaults on create.
+  const metaLost = meta === null && id !== undefined;
+  const m = meta ?? {};
+  const metaArr = <T>(v: T[] | undefined, fallback: T[]): T[] | undefined =>
+    metaLost ? undefined : (v ?? fallback);
 
   const setup = sections["setup"] ?? "";
   const development = sections["development"] ?? "";
@@ -578,28 +695,25 @@ export function parseJokeFile(content: string): ParsedJoke {
     scratchpad = body.trim();
   }
 
+  // EVERY frontmatter-derived field below is presence-checked (see
+  // strIfPresent): a key the note doesn't carry must push as `undefined`, not
+  // as a fabricated empty that the server would apply as "clear this".
   return {
-    id: typeof fm["bw-id"] === "string" ? fm["bw-id"] : undefined,
+    id,
     title: asStr(fm["title"]) || undefined,
-    premise: asStr(fm["premise"]),
-    // Key-absent must stay `undefined`, not `""`: a vault note synced before
-    // `hinge` existed has no `hinge:` line, and asStr(undefined) would
-    // fabricate "" - pushLocal then sends that as a real value (JSON.stringify
-    // only drops an actual `undefined`), so the server's `p.hinge !==
-    // undefined` guard would apply it and silently wipe a hinge set on the
-    // web. `premise` has this same latent risk (asStr defaults a missing key
-    // to "" too) - leaving it as-is here since it predates this branch and
-    // fixing it isn't this change's scope, but it should get the same
-    // presence-check treatment in a follow-up.
-    hinge: "hinge" in fm ? asStr(fm["hinge"]) : undefined,
-    keyWords: asStrArr(fm["key-words"]),
+    premise: strIfPresent(fm, "premise"),
+    hinge: strIfPresent(fm, "hinge"),
+    keyWords: strArrIfPresent(fm, "key-words"),
     stage: asNum(fm["stage"]),
-    families: asStrArr(fm["families"]),
-    jokeType: asStr(fm["joke-type"]),
-    jokeFunction: asStr(fm["joke-function"]),
-    topicTags: asStrArr(fm["topic-tags"]),
-    theme: asStr(fm["theme"]),
-    angle: asStr(fm["angle"]),
+    status: "status" in fm ? asStatus(fm["status"]) : undefined,
+    families: strArrIfPresent(fm, "families"),
+    jokeType: strIfPresent(fm, "joke-type"),
+    jokeFunction: strIfPresent(fm, "joke-function"),
+    topicTags: strArrIfPresent(fm, "topic-tags"),
+    theme: strIfPresent(fm, "theme"),
+    angle: strIfPresent(fm, "angle"),
+    // Body sections are different: the prose IS the editable surface, so a
+    // deleted `## Notes` section really does mean "clear the notes".
     setup,
     development,
     punchline,
@@ -609,25 +723,57 @@ export function parseJokeFile(content: string): ParsedJoke {
     // Read-only references; the server ignores them on a joke push (lists are
     // their own synced entity). Parsed only so they round-trip in the file.
     lists: parseListReferences(sections["lists"]),
-    setupComponents: meta.setupComponents ?? [],
-    developmentComponents: meta.developmentComponents ?? [],
-    punchlineComponents: meta.punchlineComponents ?? [],
-    setupChecklistDone: meta.setupChecklistDone ?? [],
-    setupRhythm: asRhythm(meta.setupRhythm),
-    developmentRhythm: asRhythm(meta.developmentRhythm),
-    punchlineRhythm: asRhythm(meta.punchlineRhythm),
-    setupIEN: clampIEN(asIEN(meta.setupIEN), setup),
-    developmentIEN: clampIEN(asIEN(meta.developmentIEN), development),
-    punchlineIEN: clampIEN(asIEN(meta.punchlineIEN), punchline),
-    additionalPunchlines: Array.isArray(meta.additionalPunchlines)
-      ? meta.additionalPunchlines
-      : [],
+    setupComponents: metaArr(m.setupComponents, []),
+    developmentComponents: metaArr(m.developmentComponents, []),
+    punchlineComponents: metaArr(m.punchlineComponents, []),
+    setupChecklistDone: metaArr(m.setupChecklistDone, []),
+    setupRhythm: metaLost ? undefined : asRhythm(m.setupRhythm),
+    developmentRhythm: metaLost ? undefined : asRhythm(m.developmentRhythm),
+    punchlineRhythm: metaLost ? undefined : asRhythm(m.punchlineRhythm),
+    setupIEN: metaLost ? undefined : clampIEN(asIEN(m.setupIEN), setup),
+    developmentIEN: metaLost
+      ? undefined
+      : clampIEN(asIEN(m.developmentIEN), development),
+    punchlineIEN: metaLost
+      ? undefined
+      : clampIEN(asIEN(m.punchlineIEN), punchline),
+    // Breaths are word-index arrays like rhythm, not line-parallel like IEN,
+    // so they round-trip opaquely with no clamping.
+    setupBreaths: metaLost ? undefined : asNumArr(m.setupBreaths),
+    developmentBreaths: metaLost ? undefined : asNumArr(m.developmentBreaths),
+    punchlineBreaths: metaLost ? undefined : asNumArr(m.punchlineBreaths),
+    additionalPunchlines: metaArr(
+      Array.isArray(m.additionalPunchlines) ? m.additionalPunchlines : undefined,
+      []
+    ),
   };
 }
 
 /** Read the raw frontmatter map (typed values) without parsing the body. */
 export function peekFrontmatter(content: string): Record<string, unknown> {
   return splitContent(content).fm;
+}
+
+/**
+ * Has this joke note lost its `bw-meta`?
+ *
+ * True only for a note that IS already synced (it has a `bw-id`) but whose
+ * meta blob is missing or unreadable - damage, not an edit. parseJokeFile
+ * responds by pushing nothing for the fields that live in there, so the server
+ * keeps them; the sync engine then uses this to force the note to be re-pulled
+ * from server truth, so the damaged file is repaired rather than left to be
+ * rewritten from the empty defaults it currently parses to.
+ */
+export function jokeMetaLost(content: string): boolean {
+  const fm = splitContent(content).fm;
+  if (typeof fm["bw-id"] !== "string") return false;
+  if (typeof fm["bw-meta"] !== "string") return true;
+  try {
+    JSON.parse(fm["bw-meta"]);
+    return false;
+  } catch {
+    return true;
+  }
 }
 
 /**
@@ -778,7 +924,7 @@ export function parseListFile(content: string, fallbackLabel: string): ParsedLis
     const ref = LIST_REF_RE.exec(rest);
     const text = (ref ? ref[1] : rest).trim();
     if (!text || text === "*(empty)*") continue;
-    const node: ListItemDTO = { id: ref ? ref[2] : newItemId(), text };
+    const node: ListItemDTO = { id: ref ? ref[2] : newId(), text };
 
     if (parentId !== null) {
       node.parentId = parentId;
@@ -877,6 +1023,363 @@ export function parseCrashFile(content: string): ParsedCrash {
 }
 
 // ---------------------------------------------------------------------------
+// Gig (one performance of a set, its own note under Gigs/)
+//
+// A gig is BORN IN THE APP - it's the snapshot of a set's lineup taken on the
+// night - so this note is an outcome/debrief surface, never a create path. The
+// date, the set it came from, the running order and which jokes were in it are
+// all read-only here; what you can edit is how it went.
+//
+// Every editable field is length/range/enum constrained server-side, and ONE
+// bad value 400s the entire push (every joke, list and sprint in the same
+// batch, not just this gig). So parseGigFile validates before sending and
+// DROPS anything that wouldn't pass, reporting it as a warning rather than
+// letting a typo take the whole sync down.
+
+/** Laugh-type slugs and their labels. Mirrors data/laugh-types.json in the app
+ *  (this plugin is a separate esbuild project and can't import it). Notes are
+ *  written with the labels; parsing accepts either, case-insensitively. The
+ *  server silently drops slugs it doesn't recognize, so an unknown one here is
+ *  reported to the user instead of vanishing. */
+const LAUGH_LABELS: Record<string, string> = {
+  applausebreak: "Applause break",
+  rolling: "Rolling",
+  recognition: "Recognition",
+  titter: "Titter",
+  groan: "Groan",
+  gasp: "Gasp",
+  cheer: "Cheer",
+  silence: "Silence",
+};
+
+const LAUGH_SLUG_BY_NAME = new Map<string, string>();
+for (const [slug, label] of Object.entries(LAUGH_LABELS)) {
+  LAUGH_SLUG_BY_NAME.set(slug, slug);
+  LAUGH_SLUG_BY_NAME.set(label.toLowerCase(), slug);
+}
+
+export const LAUGH_HINT = Object.values(LAUGH_LABELS).join(", ");
+
+/** Resolves a joke id to display text for the lineup - a `[[wikilink]]` when
+ *  that joke is synced into this vault, else something human-readable. Only
+ *  the trailing `^id` is read back on parse, so this text is free to change. */
+export type JokeLinker = (jokeId: string) => string;
+
+function asBool(v: unknown): boolean | undefined {
+  if (typeof v === "boolean") return v;
+  if (v === "true") return true;
+  if (v === "false") return false;
+  return undefined;
+}
+
+/** Emit a nullable number: null becomes an empty scalar, which parses back to
+ *  null (i.e. "clear this"), keeping the field hand-editable. */
+function emitNullableNum(n: number | null): string {
+  return n === null ? "''" : String(n);
+}
+
+/** Read a nullable, range-checked integer. Returns `undefined` for anything
+ *  the server would reject, so a typo drops the one field instead of 400ing
+ *  the whole push. */
+function asNullableInt(
+  v: unknown,
+  min: number,
+  max: number
+): number | null | undefined {
+  if (v === null || v === "") return null;
+  if (typeof v !== "number" || !Number.isInteger(v)) return undefined;
+  return v >= min && v <= max ? v : undefined;
+}
+
+export function gigToMarkdown(dto: GigDTO, jokeLink: JokeLinker): string {
+  const fm = frontmatter([
+    ["bw-type", "gig"],
+    ["bw-id", emitScalar(dto.id)],
+    ["bw-created", emitScalar(dto.createdAt)],
+    ["bw-updated", emitScalar(dto.updatedAt)],
+    // Read-only provenance: the gig is a snapshot of this set on this date.
+    ["bw-set", emitScalar(dto.setId)],
+    ["bw-date", emitScalar(dto.date)],
+    ["set-title", emitScalar(dto.setTitle)],
+    ["planned-minutes", emitNullableNum(dto.plannedMinutes)],
+    // Editable.
+    ["venue", emitScalar(dto.venue)],
+    ["bill-position", emitScalar(dto.billPosition)],
+    ["followed", emitScalar(dto.followed)],
+    ["vibe", emitScalar(dto.vibe)],
+    ["crowd", emitScalar(dto.crowd)],
+    ["actual-minutes", emitNullableNum(dto.actualMinutes)],
+    ["first-applause-seconds", emitNullableNum(dto.firstApplauseSeconds)],
+    ["recording-url", emitScalar(dto.recordingUrl ?? "")],
+    ["recording-reviewed", String(dto.recordingReviewed)],
+  ]);
+
+  const body: string[] = [
+    `# ${dto.venue || "Gig"} — ${dto.date}`,
+    "",
+    "## Lineup",
+    "",
+    "*Edit the rating (1-5), laughs and note on each joke. The running order, " +
+      "and which jokes were in the set, are managed in JokeBakery.*",
+    "",
+    `*Laughs: ${LAUGH_HINT}.*`,
+    "",
+  ];
+
+  if (dto.lineup.length === 0) body.push("*(no jokes recorded)*", "");
+  dto.lineup.forEach((item, i) => {
+    // The trailing `^id` is the anchor everything is read back from; the label
+    // in front of it is cosmetic.
+    const routine = item.routineTitle ? `**${item.routineTitle}** — ` : "";
+    const dropped = item.performed === "dropped" ? " *(dropped)*" : "";
+    const added = item.performed === "added" ? " *(added on the night)*" : "";
+    body.push(
+      `${i + 1}. ${routine}${jokeLink(item.jokeId)}${dropped}${added} ^${item.id}`
+    );
+    body.push(`    - rating: ${item.rating === null ? "" : item.rating}`);
+    body.push(
+      `    - laughs: ${item.laughs.map((s) => LAUGH_LABELS[s] ?? s).join(", ")}`
+    );
+    body.push(`    - new: ${item.isNew ? "yes" : "no"}`);
+    body.push(`    - note: ${item.note.replace(/\n+/g, " ").trim()}`);
+  });
+  body.push("");
+
+  const section = (heading: string, text: string) => {
+    body.push(`## ${heading}`, "", text.trim(), "");
+  };
+  section("What went well", dto.wentWell);
+  section("What went badly", dto.wentBadly);
+  section("Notes", dto.notes);
+
+  // Every routine that either appears in the lineup or already carries a note.
+  // Both, because routineNotes is pushed as a whole map: leaving an existing
+  // key out of the note would delete that note on the next push.
+  const routineTitles = new Map<string, string>();
+  for (const item of dto.lineup) {
+    if (item.routineId) routineTitles.set(item.routineId, item.routineTitle);
+  }
+  for (const routineId of Object.keys(dto.routineNotes)) {
+    if (!routineTitles.has(routineId)) routineTitles.set(routineId, "");
+  }
+  if (routineTitles.size > 0) {
+    body.push(
+      "## Routine notes",
+      "",
+      "*How each routine landed. Keep the `^` marker on the heading.*",
+      ""
+    );
+    for (const [routineId, title] of routineTitles) {
+      body.push(`### ${title || routineId} ^rt-${routineId}`, "");
+      const note = (dto.routineNotes[routineId] ?? "").trim();
+      if (note) body.push(note, "");
+    }
+  }
+
+  if (dto.nextTime.length > 0) {
+    body.push(
+      "## Next time",
+      "",
+      "*Read-only — manage these retro actions in JokeBakery.*",
+      ""
+    );
+    for (const n of dto.nextTime) body.push(`- ${n.text}`);
+    body.push("");
+  }
+
+  return fm + body.join("\n").trimEnd() + "\n";
+}
+
+export interface ParsedGig {
+  /** Absent when the note carries no `bw-id`, i.e. somebody created a gig note
+   *  by hand. Gigs can't be created from the vault, so those are skipped. */
+  push?: GigPush;
+  /** Edits that were dropped because the server would have rejected them. */
+  warnings: string[];
+}
+
+/** Pull the `- key: value` detail bullets out of one lineup entry. */
+function lineupDetails(lines: string[]): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const raw of lines) {
+    const m = /^\s*[-*]\s+([a-z]+)\s*:\s*(.*)$/i.exec(raw);
+    if (m) out[m[1].toLowerCase()] = m[2].trim();
+  }
+  return out;
+}
+
+/**
+ * Parse a gig note back into a push. Read-only fields (date, set, running
+ * order, membership, next-time actions) are ignored entirely; the editable
+ * ones are validated to the server's own limits first - see the note at the
+ * top of this section for why that matters.
+ */
+export function parseGigFile(content: string): ParsedGig {
+  const { fm, body } = splitContent(content);
+  const id = typeof fm["bw-id"] === "string" ? fm["bw-id"] : undefined;
+  const warnings: string[] = [];
+  if (!id) return { warnings };
+
+  const push: GigPush = { id };
+
+  // Venue is `min(1)` server-side: an emptied venue would 400 the push, so it
+  // is dropped rather than sent. Everything else is length-capped.
+  const capped = (
+    key: string,
+    max: number,
+    label: string,
+    allowEmpty = true
+  ): string | undefined => {
+    const v = strIfPresent(fm, key);
+    if (v === undefined) return undefined;
+    if (!allowEmpty && v.trim() === "") {
+      warnings.push(`${label} can't be empty; left unchanged.`);
+      return undefined;
+    }
+    if (v.length > max) {
+      warnings.push(`${label} is longer than ${max} characters; left unchanged.`);
+      return undefined;
+    }
+    return v;
+  };
+
+  push.venue = capped("venue", 200, "Venue", false);
+  push.vibe = capped("vibe", 2000, "Vibe");
+  push.billPosition = capped("bill-position", 100, "Bill position");
+  push.followed = capped("followed", 200, "Followed");
+  push.crowd = capped("crowd", 2000, "Crowd");
+
+  if ("actual-minutes" in fm) {
+    const v = asNullableInt(fm["actual-minutes"], 1, 1440);
+    if (v === undefined) warnings.push("Actual minutes must be 1-1440; left unchanged.");
+    else push.actualMinutes = v;
+  }
+  if ("first-applause-seconds" in fm) {
+    const v = asNullableInt(fm["first-applause-seconds"], 0, 7200);
+    if (v === undefined)
+      warnings.push("First applause seconds must be 0-7200; left unchanged.");
+    else push.firstApplauseSeconds = v;
+  }
+  if ("recording-url" in fm) {
+    const raw = asStr(fm["recording-url"]).trim();
+    if (raw === "") push.recordingUrl = null;
+    else if (/^https?:\/\//i.test(raw) && raw.length <= 2000) push.recordingUrl = raw;
+    else warnings.push("Recording URL must start with http:// or https://; left unchanged.");
+  }
+  const reviewed = asBool(fm["recording-reviewed"]);
+  if (reviewed !== undefined) push.recordingReviewed = reviewed;
+
+  const sections = parseBodySections(body);
+  const prose = (key: string, max: number, label: string): string | undefined => {
+    const v = sections[key];
+    if (v === undefined) return undefined;
+    if (v.length > max) {
+      warnings.push(`${label} is longer than ${max} characters; left unchanged.`);
+      return undefined;
+    }
+    return v;
+  };
+  push.wentWell = prose("what went well", 10000, "What went well");
+  push.wentBadly = prose("what went badly", 10000, "What went badly");
+  push.notes = prose("notes", 10000, "Notes");
+
+  // --- lineup ---
+  const lineupBlock = sections["lineup"];
+  if (lineupBlock !== undefined) {
+    const entries: Array<{ id: string; lines: string[] }> = [];
+    for (const raw of lineupBlock.split("\n")) {
+      const head = /^\s*\d+\.\s+(.*?)\s+\^([A-Za-z0-9-]+)\s*$/.exec(raw);
+      if (head) {
+        entries.push({ id: head[2], lines: [] });
+        continue;
+      }
+      const last = entries[entries.length - 1];
+      if (last) last.lines.push(raw);
+    }
+
+    const lineup: GigLineupPush[] = [];
+    for (const entry of entries) {
+      const d = lineupDetails(entry.lines);
+      const item: GigLineupPush = { id: entry.id };
+
+      if ("rating" in d) {
+        const raw = d["rating"]!;
+        if (raw === "") item.rating = null;
+        else {
+          const n = Number(raw);
+          if (Number.isInteger(n) && n >= 1 && n <= 5) item.rating = n;
+          else warnings.push(`Rating "${raw}" must be 1-5; left unchanged.`);
+        }
+      }
+      if ("laughs" in d) {
+        const names = d["laughs"]!
+          .split(",")
+          .map((s) => s.trim())
+          .filter(Boolean);
+        const slugs: string[] = [];
+        for (const name of names) {
+          const slug = LAUGH_SLUG_BY_NAME.get(name.toLowerCase());
+          if (!slug) warnings.push(`"${name}" isn't a laugh type; ignored.`);
+          else if (!slugs.includes(slug)) slugs.push(slug);
+        }
+        if (slugs.length > 8) {
+          warnings.push("A joke can carry at most 8 laugh types; left unchanged.");
+        } else {
+          item.laughs = slugs;
+        }
+      }
+      if ("new" in d) {
+        const b = asBool(d["new"]!) ?? /^(yes|y)$/i.test(d["new"]!.trim());
+        item.isNew = b;
+      }
+      if ("note" in d) {
+        const n = d["note"]!;
+        if (n.length > 2000) warnings.push("A lineup note is over 2000 characters; left unchanged.");
+        else item.note = n;
+      }
+
+      // Only send rows that actually carry an edit - `id` alone is a no-op.
+      if (Object.keys(item).length > 1) lineup.push(item);
+    }
+    if (lineup.length > 0) push.lineup = lineup;
+  }
+
+  // --- routine notes ---
+  // Absent section = don't touch. Present = the whole map, since the server
+  // replaces routineNotes wholesale.
+  const routineBlock = sections["routine notes"];
+  if (routineBlock !== undefined) {
+    const notes: Record<string, string> = {};
+    let currentId: string | null = null;
+    let buf: string[] = [];
+    const flush = () => {
+      if (currentId !== null) {
+        const text = buf.join("\n").trim();
+        if (text.length > 2000) {
+          warnings.push("A routine note is over 2000 characters; left unchanged.");
+        } else if (text) {
+          notes[currentId] = text;
+        }
+      }
+      buf = [];
+    };
+    for (const raw of routineBlock.split("\n")) {
+      const h = /^###\s+.*\^rt-([A-Za-z0-9-]+)\s*$/.exec(raw);
+      if (h) {
+        flush();
+        currentId = h[1];
+        continue;
+      }
+      if (currentId !== null) buf.push(raw);
+    }
+    flush();
+    push.routineNotes = notes;
+  }
+
+  return { push, warnings };
+}
+
+// ---------------------------------------------------------------------------
 // Ideas inbox (a single note, Ideas.md, at the sync folder root)
 
 export function ideasToMarkdown(dto: IdeasDocDTO): string {
@@ -917,7 +1420,7 @@ export function parseIdeasFile(content: string): ParsedIdeas {
     const ref = /^(.*?)\s+\^([A-Za-z0-9-]+)\s*$/.exec(rest);
     const text = (ref ? ref[1] : rest).trim();
     if (!text || text === "*(empty)*") continue;
-    items.push({ id: ref ? ref[2] : newItemId(), text });
+    items.push({ id: ref ? ref[2] : newId(), text });
   }
   return { id, items };
 }
