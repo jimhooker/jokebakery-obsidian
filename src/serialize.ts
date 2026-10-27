@@ -464,7 +464,6 @@ type OptionalNoteKeys =
   | "families"
   | "jokeType"
   | "jokeFunction"
-  | "topicTags"
   | "theme"
   | "angle"
   | "status";
@@ -516,7 +515,54 @@ function opt<T>(v: T | undefined, emit: (v: T) => string): string | undefined {
   return v === undefined ? undefined : emit(v);
 }
 
-export function jokeToMarkdown(dto: JokeNote): string {
+/**
+ * A JokeBakery tag name as an Obsidian tag. Obsidian only treats a `tags`
+ * entry as a tag when it has no spaces and nothing beyond letters, digits,
+ * `_`, `-` and `/`, so "big joke" becomes `big-joke`; case is kept. The
+ * mapping is lossy, which is fine because tags are read-only in the vault:
+ * nothing ever has to turn `big-joke` back into the name.
+ */
+export function obsidianTag(name: string): string {
+  return name
+    .trim()
+    .replace(/\s+/g, "-")
+    .replace(/[^\p{L}\p{N}_\-/]/gu, "");
+}
+
+/** The value of a joke note's `tags` property, or undefined for none (the
+ *  key is left out rather than written as `[]`, so an untagged note stays
+ *  tidy). A name that maps to nothing Obsidian would index is dropped. */
+export function tagsProperty(tagNames: string[]): string | undefined {
+  const names = tagNames.map(obsidianTag).filter((t) => t !== "" && !/^\d+$/.test(t));
+  return names.length > 0 ? emitArray(names) : undefined;
+}
+
+/**
+ * Rewrite only the `tags` property of a joke note the plugin wrote and the
+ * user has not touched since (the caller checks the hash first). Such a note
+ * is byte for byte the plugin's own output, one `key: value` per line, so
+ * swapping the line is exact and the body is never parsed. The old
+ * `topic-tags` line (the retired column, which 0.8.0 still wrote) goes too.
+ */
+export function withJokeTags(content: string, tagNames: string[]): string {
+  if (!content.startsWith("---\n")) return content;
+  const end = content.indexOf("\n---\n", 4);
+  if (end === -1) return content;
+  const lines = content
+    .slice(4, end)
+    .split("\n")
+    .filter((l) => !/^(tags|topic-tags):/.test(l));
+  const value = tagsProperty(tagNames);
+  if (value !== undefined) {
+    const at = lines.findIndex((l) => /^bw-meta:/.test(l));
+    lines.splice(at === -1 ? lines.length : at, 0, `tags: ${value}`);
+  }
+  return "---\n" + lines.join("\n") + content.slice(end);
+}
+
+/** `tagNames` are the joke's JokeBakery tags, from the plugin's store; they
+ *  are not on the DTO because the server sends tags as their own entity. */
+export function jokeToMarkdown(dto: JokeNote, tagNames: string[] = []): string {
   const meta: JokeMeta = {
     setupComponents: dto.setupComponents,
     developmentComponents: dto.developmentComponents,
@@ -551,9 +597,12 @@ export function jokeToMarkdown(dto: JokeNote): string {
     ["families", opt(dto.families, emitArray)],
     ["joke-type", opt(dto.jokeType, emitScalar)],
     ["joke-function", opt(dto.jokeFunction, emitScalar)],
-    ["topic-tags", opt(dto.topicTags, emitArray)],
     ["theme", opt(dto.theme, emitScalar)],
     ["angle", opt(dto.angle, emitScalar)],
+    // Read-only: the server never reads `tags` off a joke push. Kept next to
+    // bw-meta so withJokeTags, which inserts before that key, writes the same
+    // line in the same place a full render would.
+    ["tags", tagsProperty(tagNames)],
     ["bw-meta", emitJson(meta)],
   ]);
 
@@ -709,7 +758,8 @@ export function parseJokeFile(content: string): ParsedJoke {
     families: strArrIfPresent(fm, "families"),
     jokeType: strIfPresent(fm, "joke-type"),
     jokeFunction: strIfPresent(fm, "joke-function"),
-    topicTags: strArrIfPresent(fm, "topic-tags"),
+    // `tags` is deliberately not read: it mirrors the JokeBakery tags and the
+    // app is where they change. (`topic-tags` was the retired column.)
     theme: strIfPresent(fm, "theme"),
     angle: strIfPresent(fm, "angle"),
     // Body sections are different: the prose IS the editable surface, so a

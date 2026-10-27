@@ -26,6 +26,9 @@ import {
   peekFrontmatter,
   sprintToMarkdown,
   stripSyncIdentity,
+  obsidianTag,
+  tagsProperty,
+  withJokeTags,
 } from "../src/serialize";
 import type {
   CrashDTO,
@@ -54,7 +57,6 @@ function jokeDTO(overrides: Partial<JokeDTO> = {}): JokeDTO {
     families: ["observational", "act-out"],
     jokeType: "one-liner",
     jokeFunction: "opener",
-    topicTags: ["travel"],
     theme: "alienation",
     angle: "everything is fake",
     stage: 3,
@@ -115,7 +117,6 @@ describe("joke round trip", () => {
     expect(parsed.families).toEqual(dto.families);
     expect(parsed.jokeType).toBe(dto.jokeType);
     expect(parsed.jokeFunction).toBe(dto.jokeFunction);
-    expect(parsed.topicTags).toEqual(dto.topicTags);
     expect(parsed.theme).toBe(dto.theme);
     expect(parsed.angle).toBe(dto.angle);
     expect(parsed.setupComponents).toEqual(dto.setupComponents);
@@ -198,7 +199,8 @@ describe("Obsidian-normalized frontmatter", () => {
     expect(parsed.id).toBe("jk_123");
     expect(parsed.keyWords).toEqual(["airports", "cities"]);
     expect(parsed.families).toEqual(["observational", "act-out"]);
-    expect(parsed.topicTags).toEqual(["travel"]);
+    // The retired topic-tags column is no longer read off an old note.
+    expect("topicTags" in parsed).toBe(false);
     expect(parsed.stage).toBe(3);
     expect(parsed.setupIEN).toEqual(["I"]);
     expect(parsed.setupRhythm).toEqual({ keys: [1], colours: [2] });
@@ -618,5 +620,51 @@ describe("file-sync conflict copies", () => {
     expect(isFileSyncConflictCopy("Set 2")).toBe(false);
     expect(isFileSyncConflictCopy("Jokes about conflict")).toBe(false);
     expect(isFileSyncConflictCopy("Conflict (the play)")).toBe(false);
+  });
+});
+
+describe("tags", () => {
+  it("writes the joke's tags as Obsidian tags, read-only", () => {
+    const md = jokeToMarkdown(jokeDTO(), ["big joke", "Edinburgh 2026", "cats"]);
+    expect(md).toContain("tags: [big-joke, Edinburgh-2026, cats]");
+    // Next to bw-meta, where withJokeTags puts it too.
+    expect(md.indexOf("tags: [")).toBeLessThan(md.indexOf("bw-meta:"));
+    expect(md).not.toContain("topic-tags");
+    // Never pushed back: the app owns tags.
+    expect("tags" in parseJokeFile(md)).toBe(false);
+  });
+
+  it("leaves the key out of an untagged note", () => {
+    expect(jokeToMarkdown(jokeDTO())).not.toMatch(/^tags:/m);
+    expect(jokeToMarkdown(jokeDTO(), ["   ", "!!!"])).not.toMatch(/^tags:/m);
+  });
+
+  it("maps names Obsidian would not index", () => {
+    expect(obsidianTag("big joke")).toBe("big-joke");
+    expect(obsidianTag("  mum's  house ")).toBe("mums-house");
+    expect(obsidianTag("Édimbourg/2026")).toBe("Édimbourg/2026");
+    expect(tagsProperty(["2026"])).toBeUndefined();
+  });
+
+  it("swaps only the tags line of a clean note", () => {
+    const before = jokeToMarkdown(jokeDTO(), ["old"]);
+    const after = withJokeTags(before, ["new one", "and two"]);
+    expect(after).toBe(jokeToMarkdown(jokeDTO(), ["new one", "and two"]));
+    expect(withJokeTags(before, ["old"])).toBe(before);
+    expect(withJokeTags(before, [])).toBe(jokeToMarkdown(jokeDTO()));
+  });
+
+  it("adds the line to a note that never had one, and drops topic-tags", () => {
+    const legacy = jokeToMarkdown(jokeDTO()).replace(
+      "bw-meta:",
+      "topic-tags: [travel]\nbw-meta:"
+    );
+    expect(legacy).toContain("topic-tags");
+    const next = withJokeTags(legacy, ["cats"]);
+    expect(next).toBe(jokeToMarkdown(jokeDTO(), ["cats"]));
+  });
+
+  it("leaves a file with no frontmatter alone", () => {
+    expect(withJokeTags("## Setup\n\nHi\n", ["x"])).toBe("## Setup\n\nHi\n");
   });
 });

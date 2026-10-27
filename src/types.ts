@@ -110,7 +110,6 @@ export interface JokeDTO {
   families: string[];
   jokeType: string;
   jokeFunction: string;
-  topicTags: string[];
   theme: string;
   angle: string;
   stage: number;
@@ -238,6 +237,34 @@ export interface ChangesResult {
   deletions: Deletion[];
   ideas?: IdeasDocDTO | null;
   gigs?: GigDTO[];
+  /** Absent on a server build from before tags went over the wire. */
+  tags?: TagDTO[];
+}
+
+/**
+ * A tag as the server sends it: its name and every entity it is on. The
+ * plugin keeps these in `settings.tags` (see StoredTag) because a change to a
+ * tag comes down as the TAG, never as the jokes it touches: attaching,
+ * detaching and renaming all bump the tag's updatedAt and nothing on the
+ * joke. So the joke notes that now show the wrong tags are only knowable
+ * from what the store held before the pull.
+ */
+export interface TagDTO {
+  type: "tag";
+  id: string;
+  name: string;
+  normalizedName: string;
+  color: string;
+  links: Array<{ entityType: string; entityId: string }>;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** What the plugin remembers of a tag between syncs: enough to render a
+ *  joke's `tags` property and to know which notes a change invalidates. */
+export interface StoredTag {
+  name: string;
+  jokeIds: string[];
 }
 
 // --- Push (plugin -> server) ---
@@ -294,7 +321,6 @@ export interface JokePush {
   families?: string[];
   jokeType?: string;
   jokeFunction?: string;
-  topicTags?: string[];
   theme?: string;
   angle?: string;
   stage?: number;
@@ -439,6 +465,13 @@ export interface JokeBakerySyncSettings {
   records: Record<string, SyncRecord>;
   /** Items deleted in the vault, awaiting a push to delete them server-side. */
   pendingDeletes: Deletion[];
+  /** Every live tag the server has sent, keyed by tag id. See TagDTO for why
+   *  the plugin has to keep these rather than read them off each joke. */
+  tags: Record<string, StoredTag>;
+  /** False until one full pull has filled `tags`. An install that upgraded
+   *  into the store already has a cursor, and every tag it owns predates
+   *  that cursor, so a normal incremental pull would never send them. */
+  tagsPrimed: boolean;
   /** Highest server protocol version we've already warned about, so the
    *  "plugin is out of date" notice appears once per bump, not every sync. */
   protocolNoticeShownFor: number;
@@ -457,5 +490,7 @@ export const DEFAULT_SETTINGS: JokeBakerySyncSettings = {
   lastSyncAt: "",
   records: {},
   pendingDeletes: [],
+  tags: {},
+  tagsPrimed: false,
   protocolNoticeShownFor: 0,
 };

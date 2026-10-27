@@ -15,6 +15,7 @@ import {
   type GigDTO,
   type JokeBakerySyncSettings,
   type JokeDTO,
+  type TagDTO,
 } from "../src/types";
 import { FakeApi, FakeApp, emptyChanges } from "./fake-vault";
 
@@ -27,6 +28,7 @@ function settings(overrides: Partial<JokeBakerySyncSettings> = {}): JokeBakerySy
     token: "bw_test",
     records: {},
     pendingDeletes: [],
+    tags: {},
     ...overrides,
   };
 }
@@ -64,7 +66,6 @@ function jokeDTO(overrides: Partial<JokeDTO> = {}): JokeDTO {
     families: ["Observational"],
     jokeType: "",
     jokeFunction: "",
-    topicTags: [],
     theme: "",
     angle: "",
     stage: 2,
@@ -540,3 +541,108 @@ function hashOf(s: string): string {
   }
   return (h >>> 0).toString(16);
 }
+
+describe("tags", () => {
+  function tagDTO(overrides: Partial<TagDTO> = {}): TagDTO {
+    return {
+      type: "tag",
+      id: "tag1",
+      name: "cat stuff",
+      normalizedName: "cat stuff",
+      color: "amber",
+      links: [{ entityType: "joke", entityId: "joke1" }],
+      createdAt: EARLIER,
+      updatedAt: NOW,
+      ...overrides,
+    };
+  }
+  const path = "JokeBakery/Jokes/the-cat-one.md";
+
+  /** A vault holding one clean, synced, untagged copy of joke1. */
+  function seeded(): { app: FakeApp; s: JokeBakerySyncSettings } {
+    const app = new FakeApp();
+    app.write(path, jokeToMarkdown(jokeDTO()));
+    const s = settings({
+      lastSyncCursor: EARLIER,
+      tagsPrimed: true,
+      records: {
+        joke1: { id: "joke1", type: "joke", path, baseUpdatedAt: NOW, hash: "x" },
+      },
+    });
+    s.records["joke1"]!.hash = hashOf(app.read(path)!);
+    return { app, s };
+  }
+
+  it("writes a pulled joke with the tags that came down beside it", async () => {
+    const app = new FakeApp();
+    const api = new FakeApi(emptyChanges({ jokes: [jokeDTO()], tags: [tagDTO()] }));
+    const s = settings({ tagsPrimed: true });
+
+    await makeEngine(app, api, s).syncNow({ silent: true });
+
+    expect(app.read(path)).toContain("tags: [cat-stuff]");
+    expect(s.tags["tag1"]).toEqual({ name: "cat stuff", jokeIds: ["joke1"] });
+  });
+
+  it("re-tags a clean note when only the tag changed", async () => {
+    const { app, s } = seeded();
+    const api = new FakeApi(emptyChanges({ tags: [tagDTO()] }));
+
+    const summary = await makeEngine(app, api, s).syncNow({ silent: true });
+
+    expect(app.read(path)).toContain("tags: [cat-stuff]");
+    expect(summary.retagged).toBe(1);
+    expect(summary.pulledUpdated).toBe(0);
+    // The rewrite is the plugin's own, so the note still counts as clean.
+    expect(s.records["joke1"]!.hash).toBe(hashOf(app.read(path)!));
+    expect(api.pushes.every((p) => (p.jokes ?? []).length === 0)).toBe(true);
+  });
+
+  it("follows a rename and a detach, and a deleted tag disappears", async () => {
+    const { app, s } = seeded();
+    s.tags["tag1"] = { name: "cat stuff", jokeIds: ["joke1"] };
+    app.write(path, jokeToMarkdown(jokeDTO(), ["cat stuff"]));
+    s.records["joke1"]!.hash = hashOf(app.read(path)!);
+
+    const api = new FakeApi(emptyChanges({ tags: [tagDTO({ name: "cats" })] }));
+    await makeEngine(app, api, s).syncNow({ silent: true });
+    expect(app.read(path)).toContain("tags: [cats]");
+
+    api.setChanges(emptyChanges({ deletions: [{ type: "tag", id: "tag1" }] }));
+    const summary = await makeEngine(app, api, s).syncNow({ silent: true });
+    expect(app.read(path)).not.toMatch(/^tags:/m);
+    expect(s.tags["tag1"]).toBeUndefined();
+    expect(summary.retagged).toBe(1);
+  });
+
+  it("leaves a locally edited note alone and lets the push carry the tags", async () => {
+    const { app, s } = seeded();
+    app.write(path, app.read(path)!.replace("My cat has a routine.", "My cat has a schedule."));
+    const api = new FakeApi(emptyChanges({ tags: [tagDTO()] }));
+
+    const summary = await makeEngine(app, api, s).syncNow({ silent: true });
+
+    // Pushed first (the edit), then re-rendered from the push result with the
+    // tags the pull... has not merged yet at that point: the push happens
+    // before the pull, so this run's re-render has no tag and the retag pass
+    // finds the note clean again and fixes it.
+    expect(api.lastPush?.jokes?.[0]?.setup).toBe("My cat has a schedule.");
+    expect(app.read(path)).toContain("My cat has a schedule.");
+    expect(app.read(path)).toContain("tags: [cat-stuff]");
+    expect(summary.retagged).toBe(1);
+  });
+
+  it("does one full pull after upgrading, then goes back to the cursor", async () => {
+    const { app, s } = seeded();
+    s.tagsPrimed = false;
+    const api = new FakeApi(emptyChanges({ tags: [tagDTO()] }));
+
+    await makeEngine(app, api, s).syncNow({ silent: true });
+    expect(api.changesCalls).toEqual([""]);
+    expect(s.tagsPrimed).toBe(true);
+    expect(app.read(path)).toContain("tags: [cat-stuff]");
+
+    await makeEngine(app, api, s).syncNow({ silent: true });
+    expect(api.changesCalls[1]).toBe(NOW);
+  });
+});

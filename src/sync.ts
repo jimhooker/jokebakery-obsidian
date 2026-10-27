@@ -45,6 +45,7 @@ import {
   slugify,
   sprintToMarkdown,
   stripSyncIdentity,
+  withJokeTags,
   type JokeLinker,
   type JokeNote,
   type ParsedCrash,
@@ -57,7 +58,9 @@ import {
   CLIENT_PROTOCOL_VERSION,
   IDEAS_DOC_ID,
   type ChangesResult,
+  type Deletion,
   type JokeBakerySyncSettings,
+  type TagDTO,
   type PushBody,
   type PushResponse,
   type CrashDTO,
@@ -102,6 +105,8 @@ export interface SyncSummary {
   pulledNew: number;
   pulledUpdated: number;
   deleted: number;
+  /** Joke notes rewritten only because their tags changed. */
+  retagged: number;
   conflicts: number;
   errors: string[];
 }
@@ -113,6 +118,7 @@ function emptySummary(): SyncSummary {
     pulledNew: 0,
     pulledUpdated: 0,
     deleted: 0,
+    retagged: 0,
     conflicts: 0,
     errors: [],
   };
@@ -264,7 +270,7 @@ export class SyncEngine {
       case "gig":
         return gigToMarkdown(dto as GigDTO, this.jokeLink);
       default:
-        return jokeToMarkdown(dto as JokeDTO);
+        return jokeToMarkdown(dto as JokeDTO, this.tagNamesFor(dto.id));
     }
   }
 
@@ -431,7 +437,6 @@ export class SyncEngine {
       families: def(p.families, []),
       jokeType: def(p.jokeType, ""),
       jokeFunction: def(p.jokeFunction, ""),
-      topicTags: def(p.topicTags, []),
       theme: def(p.theme, ""),
       angle: def(p.angle, ""),
       stage: def(p.stage, 1),
@@ -737,7 +742,8 @@ export class SyncEngine {
       } else {
         const parsed = parseJokeFile(entry.content);
         content = jokeToMarkdown(
-          this.jokeNote(parsed, r.id, createdAt, r.updatedAt, r.status === "created")
+          this.jokeNote(parsed, r.id, createdAt, r.updatedAt, r.status === "created"),
+          this.tagNamesFor(r.id)
         );
       }
       await this.writeFile(entry.file.path, content);
@@ -766,9 +772,17 @@ export class SyncEngine {
   // -- pull ----------------------------------------------------------------
 
   private async pullRemote(api: SyncApi, summary: SyncSummary): Promise<void> {
-    const res = await api.changes(this.settings.lastSyncCursor);
+    // The first pull after upgrading into the tag store is a full one, so the
+    // store starts with every tag rather than only those that change from
+    // now on. The loop below already treats what it holds as "not newer", so
+    // the cost is one large response, once. (A fresh install has no cursor
+    // and gets the same full pull either way.)
+    const since = this.settings.tagsPrimed ? this.settings.lastSyncCursor : "";
+    const res = await api.changes(since);
 
     this.checkServerVersion(res.version, summary);
+
+    const retag = this.mergeTags(res.tags ?? [], res.deletions);
 
     // Each entity is paired with its type rather than read off the DTO: gigs
     // carry no `type` discriminant, so the collection it arrived in is the
@@ -855,7 +869,58 @@ export class SyncEngine {
       if (await this.removeLocal(del.id)) summary.deleted++;
     }
 
+    // Jokes whose tags changed without the joke itself changing. A note the
+    // loop above just rendered already carries the right tags, so this is a
+    // no-op for it; a note with local edits is left alone, because the push
+    // that carries those edits re-renders it with the current tags anyway.
+    for (const jokeId of retag) {
+      const record = this.settings.records[jokeId];
+      if (!record || record.type !== "joke") continue;
+      const file = this.getFile(record.path);
+      if (!file) continue;
+      const current = await this.app.vault.cachedRead(file);
+      if (hashString(current) !== record.hash) continue;
+      const next = withJokeTags(current, this.tagNamesFor(jokeId));
+      if (next === current) continue;
+      await this.writeFile(record.path, next);
+      record.hash = hashString(next);
+      summary.retagged++;
+    }
+
+    this.settings.tagsPrimed = true;
     this.settings.lastSyncCursor = res.now;
+  }
+
+  /**
+   * Fold a pull's tags into the store, and say which jokes' notes may now
+   * show the wrong tags: every joke a changed tag was on before or is on now
+   * (a rename touches all of them), and every joke a deleted tag was on.
+   */
+  private mergeTags(tags: TagDTO[], deletions: Deletion[]): Set<string> {
+    const touched = new Set<string>();
+    const store = this.settings.tags;
+    for (const t of tags) {
+      const next = t.links.filter((l) => l.entityType === "joke").map((l) => l.entityId);
+      for (const id of store[t.id]?.jokeIds ?? []) touched.add(id);
+      for (const id of next) touched.add(id);
+      store[t.id] = { name: t.name, jokeIds: next };
+    }
+    for (const d of deletions) {
+      if (d.type !== "tag") continue;
+      for (const id of store[d.id]?.jokeIds ?? []) touched.add(id);
+      delete store[d.id];
+    }
+    return touched;
+  }
+
+  /** The names of the tags on a joke, in a fixed order so the same tags
+   *  always render the same line (the note's hash depends on it). */
+  private tagNamesFor(jokeId: string): string[] {
+    const names: string[] = [];
+    for (const t of Object.values(this.settings.tags)) {
+      if (t.jokeIds.includes(jokeId)) names.push(t.name);
+    }
+    return names.sort((a, b) => a.localeCompare(b));
   }
 
   /**
@@ -939,6 +1004,7 @@ function formatSummary(s: SyncSummary): string {
   if (pushed) parts.push(`↑ ${pushed} pushed`);
   if (pulled) parts.push(`↓ ${pulled} pulled`);
   if (s.deleted) parts.push(`🗑 ${s.deleted} deleted`);
+  if (s.retagged) parts.push(`${s.retagged} retagged`);
   if (s.conflicts) parts.push(`${s.conflicts} conflict${s.conflicts === 1 ? "" : "s"}`);
   if (s.errors.length) parts.push(`${s.errors.length} error${s.errors.length === 1 ? "" : "s"}`);
   const head = parts.length ? parts.join(" · ") : "already up to date";

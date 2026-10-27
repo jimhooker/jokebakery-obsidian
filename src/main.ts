@@ -75,6 +75,7 @@ export default class JokeBakerySyncPlugin extends Plugin {
       // partial one) doesn't leave them undefined.
       records: data?.records ?? {},
       pendingDeletes: data?.pendingDeletes ?? [],
+      tags: data?.tags ?? {},
     };
     // Pre-rebrand installs pointed at the old deploy URL. Migrate only the
     // exact old default — a custom URL (e.g. localhost) is left alone.

@@ -1,12 +1,13 @@
 {
   "name": "jokebakery-sync",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "description": "Two-way sync of your JokeBakery jokes, sprints, lists, crashes and gigs with your vault as Markdown. Requires a JokeBakery account.",
   "main": "main.js",
   "scripts": {
     "dev": "node esbuild.config.mjs",
     "build": "tsc --noEmit --skipLibCheck && node esbuild.config.mjs production",
-    "test": "vitest run"
+    "test": "vitest run",
+    "sync-release": "node scripts/sync-release.mjs"
   },
   "keywords": [
     "obsidian",

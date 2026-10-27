@@ -23,8 +23,12 @@ sync.
   file's frontmatter, not the filename, so renaming is safe.
 - **Jokes** → `Jokes/<slug>.md`. Editable prose under `## Setup`,
   `## Development`, `## Punchline`, plus `## Notes` and `## Scratchpad`.
-  Structured fields (stage, families, tags, theme, angle) are Obsidian
-  properties; rhythm/IEN markup rides in an opaque `bw-meta` property.
+  Structured fields (stage, status, families, theme, angle) are Obsidian
+  properties; rhythm/IEN markup rides in an opaque `bw-meta` property. The
+  joke's JokeBakery tags are its Obsidian `tags`, so they show in the tag
+  pane and in search. They are read-only here: a space in a name becomes a
+  hyphen (`big-joke`) because Obsidian will not index a tag with a space,
+  and tagging happens in JokeBakery.
 - **Lists** → `Lists/<slug>.md`. A user-owned, reusable list: its items are a
   plain bullet list in the body; edit them here. A list can be attached to many
   jokes (attach/detach in JokeBakery).
@@ -91,6 +95,13 @@ and restores it.
   edit them in JokeBakery, not Obsidian. If you delete lines from a slot in
   Obsidian, stale IEN voice tags past the new line count are dropped on push;
   reordering lines can still leave tags on the wrong line (fix in JokeBakery).
+- **Tags are pull-only.** A joke note's `tags` property mirrors its JokeBakery
+  tags on every sync, including when only the tag changed (a rename, an attach
+  or a detach rewrites the untouched notes it is on). Editing the property in
+  Obsidian does nothing on the next push; the app is where tags change.
+- **Routines, sets and breakdowns don't sync.** The vault is for the writing
+  and the record of performing it; assembling routines into sets is work for
+  the app's structured pages.
 
 ## Installing
 
