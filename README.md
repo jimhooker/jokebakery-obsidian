@@ -1,9 +1,9 @@
 # JokeBakery Sync (Obsidian plugin)
 
 Two-way sync between [JokeBakery](https://jokebakery.com) and an
-Obsidian vault. Your **sprints**, **jokes** and **lists** become Markdown files
-you can read and edit in Obsidian; edits flow back to JokeBakery on the next
-sync.
+Obsidian vault. Your **sprints**, **jokes**, **lists** and **gigs** become
+Markdown files you can read and edit in Obsidian; edits flow back to JokeBakery
+on the next sync.
 
 ## What you get in the vault
 
@@ -15,6 +15,8 @@ sync.
     whats-the-deal-with-airline-food.md
   Lists/
     dentist.md           # one reusable list per file
+  Gigs/
+    2026-07-14-the-comedy-cellar.md   # one performance, with how it went
   Conflicts/             # auto-created only when a sync conflict happens
 ```
 
@@ -32,11 +34,37 @@ sync.
 - **Lists** → `Lists/<slug>.md`. A user-owned, reusable list: its items are a
   plain bullet list in the body; edit them here. A list can be attached to many
   jokes (attach/detach in JokeBakery).
+- **Gigs** → `Gigs/<date>-<venue>.md`. The set as you performed it, plus how it
+  went. See below.
 
 A joke's `## Lists` section is now a **read-only** list of the labels attached to
 that joke — open the matching note in `Lists/` to edit a list's contents.
 `## Alternative punchlines` and `## Setup versions` are likewise read-only —
 manage those in JokeBakery.
+
+## Gigs
+
+A gig note is where you write up a set after you've done it. Each one carries
+the lineup you performed, with a link through to every joke's own note, so the
+gig is a way back into the material rather than a dead record.
+
+**You can edit:** venue, bill position, who you followed, the vibe, the crowd,
+actual minutes, seconds to the first applause break, the recording URL and
+whether you've reviewed it; the `## What went well`, `## What went badly`,
+`## Notes` and `## Routine notes` sections; and per joke in the lineup, its
+rating (1-5), laugh types and note.
+
+**You can't edit here:** the date, the set it came from, the running order,
+which jokes were in it, or the `## Next time` actions. Those belong to the gig
+itself — change them in JokeBakery. A gig is also **created** in JokeBakery,
+at the moment you log a set: a gig note you write by hand in `Gigs/` has
+nothing to attach to and is skipped (the plugin tells you so).
+
+Laugh types are the ones from the app: Applause break, Rolling, Recognition,
+Titter, Groan, Gasp, Cheer, Silence. Write them as a comma-separated list. If
+you type something that isn't a laugh type, or a rating outside 1-5, that one
+value is left unchanged and the sync report says why — the rest of your edits
+still go through.
 
 ## Setup
 
@@ -72,8 +100,8 @@ sides between syncs, nothing is lost: the losing version is written to
 
 Deletions sync **both ways**:
 
-- Delete a joke, sprint, or list in **JokeBakery** → its file is removed from
-  the vault on the next pull (it goes to your trash, following Obsidian's
+- Delete a joke, sprint, list or gig in **JokeBakery** → its file is removed
+  from the vault on the next pull (it goes to your trash, following Obsidian's
   "Deleted files" setting, so it's recoverable).
 - Delete a synced **file in Obsidian** → the item is removed in JokeBakery on
   the next push. (JokeBakery keeps it as a soft-deleted tombstone, so it's
@@ -89,7 +117,7 @@ reliable signal. If a synced file goes missing without a delete event (e.g. it
 was removed outside Obsidian), the next pull treats the server as authoritative
 and restores it.
 
-## Limitations (v1)
+## Limitations
 
 - Rhythm/IEN word-index markup and alternative punchlines are **pull-only** —
   edit them in JokeBakery, not Obsidian. If you delete lines from a slot in
@@ -99,9 +127,17 @@ and restores it.
   tags on every sync, including when only the tag changed (a rename, an attach
   or a detach rewrites the untouched notes it is on). Editing the property in
   Obsidian does nothing on the next push; the app is where tags change.
-- **Routines, sets and breakdowns don't sync.** The vault is for the writing
-  and the record of performing it; assembling routines into sets is work for
-  the app's structured pages.
+- **Routines, sets and breakdowns don't sync.** This is deliberate, not a
+  gap waiting to be filled. The vault is for the writing — the material itself
+  and the record of performing it. Assembling routines into sets is
+  performance-building work that wants the app's structured UI (and the desktop
+  client), and flattening it into Markdown would produce files that are
+  tedious to edit and easy to corrupt. If that changes, they need the same
+  treatment gigs got: an explicit read-only/editable split per field, and
+  client-side validation of anything the server constrains.
+- A joke's **status** can be set from the vault, but only to one of the values
+  JokeBakery uses (`tested`, `working`, `hit`, `needsrewrite`, `retired`).
+  Anything else is ignored rather than sent.
 
 ## Installing
 
@@ -120,8 +156,8 @@ BRAT keeps the plugin updated as new releases are published here.
 
 ### Manual
 
-1. Download `main.js`, `manifest.json`, `styles.css` and `versions.json` from
-   the [latest release](https://github.com/jimhooker/jokebakery-obsidian/releases),
+1. Download `main.js`, `manifest.json` and `styles.css` from the
+   [latest release](https://github.com/jimhooker/jokebakery-obsidian/releases),
    or build them yourself with `npm install && npm run build`.
 2. Copy them into `<your-vault>/.obsidian/plugins/jokebakery-sync/`.
 3. In Obsidian: **Settings → Community plugins**, enable **JokeBakery Sync**.
@@ -131,7 +167,7 @@ BRAT keeps the plugin updated as new releases are published here.
 0.4.0 changed the plugin id from `bakerwriter-sync` to `jokebakery-sync`, so
 Obsidian treats it as a new plugin. To keep your settings and sync state:
 
-1. Install 0.4.0 (BRAT or manual) but don't enable it yet.
+1. Install 0.4.0 or later (BRAT or manual) but don't enable it yet.
 2. Copy `<vault>/.obsidian/plugins/bakerwriter-sync/data.json` into
    `<vault>/.obsidian/plugins/jokebakery-sync/`.
 3. Enable **JokeBakery Sync**, then uninstall the old **BakerWriter Sync**.
@@ -142,8 +178,26 @@ files are matched by their `bw-id`, so nothing duplicates.
 ### Develop
 
 `npm run dev` runs esbuild in watch mode. Symlink this folder into your vault's
-`.obsidian/plugins/` to iterate live. `npm test` runs the serialization
-round-trip suite (vitest) — run it after touching `src/serialize.ts`.
+`.obsidian/plugins/` to iterate live.
+
+`npm test` runs two vitest suites: `tests/serialize.test.ts` (Markdown ⇄ DTO
+round-trips) and `tests/sync.test.ts`, which drives the real `SyncEngine`
+against an in-memory vault and a fake server. Run both after touching
+`src/serialize.ts` or `src/sync.ts`. The sync suite is the one that guards the
+rules about what may be pushed — above all that a frontmatter key a note
+doesn't carry is never sent as an empty value, because the server would apply
+that as "clear this field".
+
+`npm run build` typechecks (`src` **and** `tests`) then bundles.
+
+### Where the source lives
+
+This is the release repo: the one BRAT watches and the one releases are tagged
+from (a tag named after the version, with no `v` prefix, builds `main.js` and
+attaches it with `manifest.json` and `styles.css` to a GitHub Release). The
+plugin is developed and tested inside the JokeBakery app repo and mirrored
+here, so a change lands in the app repo first and arrives here with the
+release that ships it. Issues are welcome here either way.
 
 ## Privacy and network use
 
